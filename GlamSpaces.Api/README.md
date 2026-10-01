@@ -1,6 +1,6 @@
 # GlamSpaces.Api — Registro e inicio de sesión (Sprint 1)
 
-API en ASP.NET Core (.NET 8) basada en el modelo `Usuario` que les pasaron:
+API en ASP.NET Core (.NET 9) basada en el modelo `Usuario` que les pasaron:
 
 ```csharp
 public class Usuario
@@ -21,7 +21,7 @@ la forma de los datos cambió.
 
 ## Requisitos
 
-- .NET 8 SDK instalado (`dotnet --version` debe mostrar 8.x).
+- .NET 9 SDK instalado (`dotnet --version` debe mostrar 9.x).
 
 ## Cómo correrla
 
