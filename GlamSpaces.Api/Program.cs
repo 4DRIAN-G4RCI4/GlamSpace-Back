@@ -3,11 +3,15 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Base de datos: SQLite en un archivo local (glamspaces.db).
-// Cambiar a SQL Server / MySQL más adelante solo implica cambiar esta línea
-// y la cadena de conexión en appsettings.json (el resto del código no cambia).
+// Base de datos: Azure SQL (SQL Server en la nube).
+// La cadena de conexión NO va en appsettings.json (tiene contraseña):
+//  - En tu compu: dotnet user-secrets
+//  - En Azure App Service: Configuración > Cadenas de conexión > GlamSpacesDb
 builder.Services.AddDbContext<GlamSpacesContext>(opciones =>
-    opciones.UseSqlite(builder.Configuration.GetConnectionString("GlamSpacesDb"))
+    opciones.UseSqlServer(
+        builder.Configuration.GetConnectionString("GlamSpacesDb"),
+        sql => sql.EnableRetryOnFailure() // reintenta si Azure tarda en responder
+    )
 );
 
 builder.Services.AddControllers();
