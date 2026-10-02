@@ -35,12 +35,17 @@ Por defecto corre en algo como `http://localhost:5062` (la terminal te dice
 el puerto exacto). Abre `http://localhost:5062/swagger` para probar los
 endpoints desde el navegador sin necesitar Postman.
 
-La base de datos es un archivo SQLite (`glamspaces.db`) que se crea solo la
-primera vez que corres el proyecto — no hay que instalar SQL Server ni nada
-aparte. Si más adelante Adrian quiere usar otro motor (SQL Server, MySQL),
-solo se cambia una línea en `Program.cs` (`UseSqlite` → `UseSqlServer`, etc.)
-y la cadena de conexión en `appsettings.json`; los controllers y el modelo
-no cambian.
+La base de datos es **Azure SQL** (`glamspaces-db`). La cadena de conexión no se
+sube a Git porque trae contraseña; cada quien la guarda en su compu con:
+
+```bash
+dotnet user-secrets init
+dotnet user-secrets set "ConnectionStrings:GlamSpacesDb" "Server=tcp:...;Password=LA_CONTRASEÑA;..."
+```
+
+Tu IP debe estar permitida en el firewall del servidor de Azure SQL
+(Portal de Azure → servidor SQL → Redes). Las tablas se crean solas la primera
+vez que corre la API.
 
 ## Endpoints
 
