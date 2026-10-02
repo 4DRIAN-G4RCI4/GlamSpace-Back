@@ -38,11 +38,9 @@ using (var scope = app.Services.CreateScope())
     db.Database.EnsureCreated();
 }
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+// Swagger disponible en todos los entornos (también en Azure)
+app.UseSwagger();
+app.UseSwaggerUI();
 
 app.UseCors("FrontendDev");
 app.UseAuthorization();
