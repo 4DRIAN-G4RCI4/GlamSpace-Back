@@ -14,6 +14,9 @@ builder.Services.AddDbContext<GlamSpacesContext>(opciones =>
     )
 );
 
+// Healthcheck para monitoreo: /health responde Healthy si la BD contesta.
+builder.Services.AddHealthChecks().AddDbContextCheck<GlamSpacesContext>();
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -45,5 +48,6 @@ app.UseSwaggerUI();
 app.UseCors("FrontendDev");
 app.UseAuthorization();
 app.MapControllers();
+app.MapHealthChecks("/health");
 
 app.Run();
