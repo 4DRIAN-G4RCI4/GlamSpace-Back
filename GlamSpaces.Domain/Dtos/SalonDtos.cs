@@ -24,6 +24,15 @@ public class ListarSalonesRequest : PaginacionRequest
     public int? AdminId { get; set; } // null = todos los salones
 }
 
+// POST /api/salones/buscar (HU-09). Todos los filtros son opcionales y combinables;
+// null o <= 0 significa "sin filtro".
+public class BuscarSalonesRequest : PaginacionRequest
+{
+    public string? Zona { get; set; } // coincidencia parcial, sin importar mayúsculas ni acentos
+    public int? CapacidadMinima { get; set; }
+    public decimal? PrecioMaximo { get; set; } // compara contra el paquete más barato del salón
+}
+
 // Detalle del salón con sus paquetes y fotos.
 public class SalonResponse
 {
@@ -62,4 +71,15 @@ public class SalonResumenResponse
     public int Capacidad { get; set; }
     public string Estado { get; set; } = string.Empty;
     public int TotalPaquetes { get; set; }
+}
+
+// Renglón de la búsqueda pública: lo que el cliente ve en la tarjeta del salón.
+public class SalonBusquedaResponse
+{
+    public int Id { get; set; }
+    public string Nombre { get; set; } = string.Empty;
+    public string Zona { get; set; } = string.Empty;
+    public int Capacidad { get; set; }
+    public decimal PrecioDesde { get; set; } // precio del paquete más barato
+    public string? FotoPrincipal { get; set; } // URL de la primera foto; null si no tiene
 }
