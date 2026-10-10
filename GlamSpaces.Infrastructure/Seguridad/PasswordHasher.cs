@@ -1,6 +1,4 @@
-using System.Security.Cryptography;
-
-namespace GlamSpaces.Api.Services;
+namespace GlamSpaces.Infrastructure.Seguridad;
 
 // Hashea y verifica contraseñas con PBKDF2 (sin paquetes externos).
 // El resultado que se guarda en Usuario.PasswordHash tiene el formato:

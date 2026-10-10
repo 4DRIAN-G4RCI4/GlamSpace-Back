@@ -1,62 +1,30 @@
-using GlamSpaces.Api.Data;
-using GlamSpaces.Api.Dtos;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-
 namespace GlamSpaces.Api.Controllers;
 
-// Cubre HU-06: editar y borrar paquetes (agregarlos está en SalonesController).
-[ApiController]
+// Cubre HU-06: agregar, editar y borrar paquetes de un salón. Solo el dueño del salón.
 [Route("api/paquetes")]
-public class PaquetesController : ControllerBase
+public class PaquetesController : ApiControllerBase
 {
-    private readonly GlamSpacesContext _db;
+    private readonly IPaqueteRepositorio _paquetes;
 
-    public PaquetesController(GlamSpacesContext db)
+    public PaquetesController(IPaqueteRepositorio paquetes)
     {
-        _db = db;
+        _paquetes = paquetes;
     }
 
-    // PUT /api/paquetes/{id}
-    // Actualiza un paquete. Solo el dueño del salón al que pertenece.
-    [HttpPut("{id:int}")]
-    public async Task<ActionResult<PaqueteResponse>> Actualizar(int id, [FromBody] PaqueteRequest request)
-    {
-        var error = SalonesController.ValidarPaquete(request);
-        if (error != null) return BadRequest(new { mensaje = error });
+    // POST /api/paquetes/crear
+    // Agrega un paquete al salón indicado en SalonId.
+    [HttpPost("crear")]
+    public async Task<ActionResult<RespuestaApi<PaqueteResponse>>> Crear([FromBody] CrearPaqueteRequest request)
+        => Responder(await _paquetes.Crear(request));
 
-        var paquete = await _db.Paquetes.Include(p => p.Salon).FirstOrDefaultAsync(p => p.Id == id);
-        if (paquete == null) return NotFound();
-        if (paquete.Salon!.AdminId != request.AdminId) return SalonesController.NoEsDueno();
+    // POST /api/paquetes/actualizar
+    [HttpPost("actualizar")]
+    public async Task<ActionResult<RespuestaApi<PaqueteResponse>>> Actualizar([FromBody] ActualizarPaqueteRequest request)
+        => Responder(await _paquetes.Actualizar(request));
 
-        paquete.NombrePaquete = request.NombrePaquete.Trim();
-        paquete.Descripcion = request.Descripcion?.Trim();
-        paquete.Precio = request.Precio;
-
-        await _db.SaveChangesAsync();
-        return Ok(SalonesController.APaqueteResponse(paquete));
-    }
-
-    // DELETE /api/paquetes/{id}?adminId=5
-    // Borra un paquete. Solo el dueño. No deja un salón publicado sin paquetes.
-    // AdminId va en la URL porque un DELETE normalmente no lleva body.
-    // TODO: cuando haya JWT, sacar AdminId del token en vez de recibirlo en la URL.
-    [HttpDelete("{id:int}")]
-    public async Task<IActionResult> Eliminar(int id, [FromQuery] int adminId)
-    {
-        var paquete = await _db.Paquetes.Include(p => p.Salon).FirstOrDefaultAsync(p => p.Id == id);
-        if (paquete == null) return NotFound();
-        if (paquete.Salon!.AdminId != adminId) return SalonesController.NoEsDueno();
-
-        if (paquete.Salon.Estado == "publicado")
-        {
-            int totalPaquetes = await _db.Paquetes.CountAsync(p => p.SalonId == paquete.SalonId);
-            if (totalPaquetes <= 1)
-                return BadRequest(new { mensaje = "Un salón publicado debe tener al menos un paquete. Despublícalo antes de borrar el último." });
-        }
-
-        _db.Paquetes.Remove(paquete);
-        await _db.SaveChangesAsync();
-        return NoContent();
-    }
+    // POST /api/paquetes/eliminar
+    // No deja un salón publicado sin paquetes.
+    [HttpPost("eliminar")]
+    public async Task<ActionResult<RespuestaApi<int>>> Eliminar([FromBody] EliminarPaqueteRequest request)
+        => Responder(await _paquetes.Eliminar(request));
 }
