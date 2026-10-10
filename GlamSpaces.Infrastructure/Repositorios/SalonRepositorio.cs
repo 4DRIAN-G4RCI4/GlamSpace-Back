@@ -73,19 +73,19 @@ public class SalonRepositorio : ISalonRepositorio
     public async Task<RespuestaPaginada<SalonResumenResponse>> Listar(ListarSalonesRequest request)
     {
         var p = StoredProcedure.Parametros(new { request.AdminId, request.Pagina, request.TamanoPagina });
+        return await _db.Paginado<SalonResumenResponse>("sp_Salon_Listar", p);
+    }
 
-        RespuestaPaginada<SalonResumenResponse> respuesta;
-
-        // Primer result set: datos del paginado (se mapean directo a la respuesta). Segundo: la página.
-        using (var resultados = await _db.QueryMultipleAsync(
-            "sp_Salon_Listar", p, commandType: CommandType.StoredProcedure))
+    public async Task<RespuestaPaginada<SalonBusquedaResponse>> Buscar(BuscarSalonesRequest request)
+    {
+        var p = StoredProcedure.Parametros(new
         {
-            respuesta = await resultados.ReadFirstAsync<RespuestaPaginada<SalonResumenResponse>>();
-            respuesta.Datos = (await resultados.ReadAsync<SalonResumenResponse>()).ToList();
-        }
-
-        respuesta.Codigo = p.Codigo();
-        respuesta.Mensaje = p.Mensaje();
-        return respuesta;
+            request.Zona,
+            request.CapacidadMinima,
+            request.PrecioMaximo,
+            request.Pagina,
+            request.TamanoPagina,
+        });
+        return await _db.Paginado<SalonBusquedaResponse>("sp_Salon_Buscar", p);
     }
 }

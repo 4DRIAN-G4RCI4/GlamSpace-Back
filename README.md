@@ -7,13 +7,31 @@ Plataforma para encontrar y reservar salones de eventos.
 - Healthcheck: `/health` → `Healthy` si la API y la BD responden
 - Despliegue: GitHub Actions publica en Azure App Service (`glamspaces-api`) con cada push a `main`
 
-> **Estado actual:** la arquitectura y los endpoints vigentes son los del **[Sprint 2.5](#sprint-25--cambio-completo-de-la-infraestructura-del-backend)**.
+> **Estado actual:** la arquitectura y los endpoints vigentes son los del **[Sprint 2.5](#sprint-25--cambio-completo-de-la-infraestructura-del-backend)**,
+> más el **Sprint 3**: [búsqueda y filtrado de salones (HU-09)](#sprint-3--búsqueda-y-filtrado-de-salones-hu-09)
+> y [índices para la búsqueda (HU-08)](#sprint-3--índices-y-consultas-para-búsqueda-de-salones-hu-08).
 > Las secciones de Sprint 1 y Sprint 2 se conservan como historial.
+
+| Sprint | Historias | Estado |
+|---|---|---|
+| Sprint 1 | HU-02, HU-03, HU-04: registro e inicio de sesión | ✅ En producción |
+| Sprint 2 | HU-06: CRUD de salones y paquetes | ✅ En producción |
+| Sprint 2.5 | Cambio completo de la infraestructura del backend | ✅ En producción |
+| Sprint 3 | HU-08: índices · HU-09: búsqueda y filtrado | ✅ En producción |
 
 ## Cómo correrla
 
-1. Correr en la BD, en orden, `Database/01_Tablas.sql` y `Database/02_StoredProcedures.sql`.
-   Ambos se pueden volver a correr sin romper nada. En `glamspaces-db` ya están aplicados.
+1. Correr en la BD, en orden:
+   - `Database/01_Tablas.sql`
+   - `Database/02_StoredProcedures.sql`
+   - `Database/03_Indices.sql`
+
+   Todos se pueden volver a correr sin romper nada.
+   `Database/04_DatosPrueba.sql` es **solo para bases locales o de prueba**: carga 6 salones de ejemplo.
+
+   > En `glamspaces-db` las tablas las creó Entity Framework en el Sprint 1, no `01_Tablas.sql`,
+   > así que **no tienen valores por defecto** (`FechaRegistro`, `FechaCreacion`, `Estado`).
+   > Por eso los SP y los scripts siempre mandan esos valores explícitamente.
 2. Guardar la cadena de conexión (no se sube a Git porque trae contraseña):
    ```bash
    cd GlamSpaces.Api
@@ -330,4 +348,125 @@ Además:
 
 - **JWT**: sacar el `adminId` del token en vez de recibirlo en el body (marcado con `TODO` en los DTOs).
 - Subida de imágenes a almacenamiento externo.
-- Búsqueda pública de salones (HU-09).
+- ~~Búsqueda pública de salones (HU-09)~~ → hecha en el Sprint 3.
+
+---
+
+## Sprint 3 — Búsqueda y filtrado de salones (HU-09)
+
+Endpoint para que el frontend muestre a los clientes solo los salones que cumplen lo que buscan.
+Sigue la misma arquitectura del Sprint 2.5: un SP nuevo (`sp_Salon_Buscar`), el repositorio y el endpoint.
+
+### `POST /api/salones/buscar`
+
+Todos los filtros son **opcionales** y se pueden **combinar** sin generar errores:
+
+| Campo | Tipo | Qué hace |
+|---|---|---|
+| `zona` | string | Coincidencia parcial, sin importar mayúsculas ni acentos (`"rio"` encuentra `"Tepeji del Río"`) |
+| `capacidadMinima` | int | Salones con esa capacidad **o mayor** |
+| `precioMaximo` | number | Salones cuyo paquete más barato cuesta **eso o menos** |
+| `pagina`, `tamanoPagina` | int | Paginado (por defecto 1 y 10; máximo 100) |
+
+Si un filtro se manda vacío, en `null`, en 0 o negativo, se ignora.
+
+```json
+POST /api/salones/buscar
+{ "zona": "tula", "precioMaximo": 10000 }
+```
+
+Respuesta (formato paginado estándar):
+
+```json
+{
+  "pagina": 1, "tamanoPagina": 10, "totalRegistros": 1, "totalPaginas": 1,
+  "codigo": 0, "mensaje": "Consulta exitosa.", "exito": true,
+  "datos": [
+    {
+      "id": 1,
+      "nombre": "Salón Jardín Encanto",
+      "zona": "Tula de Allende, Hgo.",
+      "capacidad": 150,
+      "precioDesde": 8500.00,
+      "fotoPrincipal": "https://glamspacesfrontsa.z41.web.core.windows.net/img/salon-jardin-1.jpg"
+    }
+  ]
+}
+```
+
+- `precioDesde`: precio del paquete más barato del salón.
+- `fotoPrincipal`: la primera foto del salón; `null` si no tiene.
+
+### Reglas
+
+- Solo aparecen salones **publicados**. Como para publicar se requiere al menos un paquete, siempre hay `precioDesde`.
+- Resultados ordenados del más barato al más caro. Ordenar por relevancia o calificación está fuera de alcance.
+- **Sin resultados no es un error**: responde `codigo: 0`, `datos: []` y `mensaje: "No se encontraron salones con esos filtros."`.
+
+### Criterios de aceptación (verificados)
+
+| # | Caso | Resultado |
+|---|---|---|
+| 1 | Búsqueda sin filtros | Todos los salones publicados (los no publicados nunca aparecen) |
+| 2 | `capacidadMinima` | Solo salones con esa capacidad o mayor |
+| 3 | `zona` + `precioMaximo` | Solo los que cumplen ambas condiciones |
+| 4 | Ningún salón cumple | Lista vacía con respuesta exitosa |
+
+También se probaron los 3 filtros combinados, la zona sin acento, los filtros vacíos o negativos, el paginado, un tipo de dato incorrecto (`1001`) y la regresión completa del Sprint 2.5.
+
+---
+
+## Sprint 3 — Índices y consultas para búsqueda de salones (HU-08)
+
+Optimiza la búsqueda de la HU-09 para que responda rápido aunque haya muchos salones.
+
+### La consulta
+
+Vive en `sp_Salon_Buscar` (`Database/02_StoredProcedures.sql`):
+- **"Precio desde"**: combina cada salón con su paquete más barato (`CROSS APPLY ... MIN(Precio)`).
+- **Solo publicados**: filtra internamente por `Estado = 'publicado'`. Un salón no publicado nunca participa.
+- **`OPTION (RECOMPILE)`**: como todos los filtros son opcionales, SQL Server arma el plan con los valores reales de cada búsqueda. Sin esto usaría un plan genérico que no aprovecha los índices.
+
+### Los índices (`Database/03_Indices.sql`)
+
+| Índice | Columnas | Para qué |
+|---|---|---|
+| `IX_Salones_Publicados_Capacidad_Zona` | `Capacidad` + incluye `Zona`, `Nombre`, **filtrado** `WHERE Estado = 'publicado'` | Solo guarda los salones publicados, así es más chico que la tabla. "Capacidad mínima" busca directo en el índice. La zona se filtra dentro del índice sin leer la tabla. |
+| `IX_Paquetes_SalonId_Precio` | `SalonId, Precio` | El paquete más barato de cada salón es la primera fila del índice. |
+| `IX_FotosSalon_SalonId` | `SalonId` + incluye `Url` | La foto principal sale directo del índice. |
+
+**¿Por qué zona no es la llave del índice?** La zona se busca por coincidencia parcial (`LIKE '%tula%'`). Ese tipo de búsqueda no puede "saltar" directo dentro de un índice, así que de llave no serviría. Como columna incluida sí sirve: el filtro se resuelve leyendo solo el índice (chico y solo con publicados) y no la tabla completa.
+
+**Detalle técnico:** los índices filtrados requieren `QUOTED_IDENTIFIER ON` en los SP que insertan o actualizan salones. Por eso `02_StoredProcedures.sql` lo activa al inicio. Hay que correr `02` antes que `03`.
+
+### Prueba de rendimiento (criterio 2)
+
+Prueba en LocalDB con **50,000 salones** (40,000 publicados), 150,000 paquetes y 50,000 fotos. Cada búsqueda se ejecutó 10 veces; se reporta el promedio.
+
+| Búsqueda | Sin índices | Con índices | Mejora |
+|---|---|---|---|
+| zona + precio máximo | 421.6 ms · 45,226 lecturas | **84.1 ms** · 1,355 lecturas | **5× más rápida**, 33× menos lecturas |
+| zona + capacidad + precio | 620.4 ms · 78,665 lecturas | **70.8 ms** · 1,522 lecturas | **9× más rápida**, 52× menos lecturas |
+| capacidad mínima | 117.8 ms | **57.3 ms** | 2× más rápida |
+| sin filtros | 284.7 ms | **206.1 ms** | 1.4× más rápida |
+
+La búsqueda sin filtros es la más pesada porque tiene que calcular el "precio desde" de **todos** los salones publicados para ordenarlos por precio. Con 40,000 salones sigue estando en ~200 ms. Si algún día crece mucho más, la mejora sería guardar el precio mínimo como columna del salón.
+
+Los tiempos son de una laptop; en Azure varían según el plan contratado, pero la proporción de mejora se mantiene.
+
+### Criterios de aceptación (verificados con `04_DatosPrueba.sql`)
+
+| # | Caso | Resultado |
+|---|---|---|
+| 1 | Salones publicados con distintos precios | Cada uno muestra su paquete más barato (ej. Hacienda El Rosario: paquetes de $30,000 y $45,000 → `precioDesde: 30000`) |
+| 2 | Índice sobre zona y capacidad | Búsquedas filtradas de 5 a 9 veces más rápidas (tabla de arriba) |
+| 3 | Salón no publicado | "[Prueba] Jardín Oculto" (no publicado, el más barato y con más capacidad) nunca aparece |
+| 4 | 6 salones de prueba con filtros combinados | Resultados consistentes. Ej.: zona "tula" + capacidad ≥ 200 + precio ≤ 40,000 → solo Hacienda El Rosario |
+
+### Para desplegar (HU-08 y HU-09)
+
+Correr en `glamspaces-db`, en este orden:
+1. `Database/02_StoredProcedures.sql`: agrega `sp_Salon_Buscar` y recrea los demás con `QUOTED_IDENTIFIER ON`.
+2. `Database/03_Indices.sql`: crea los índices.
+
+Ambos son idempotentes. **No correr** `04_DatosPrueba.sql` en producción.
