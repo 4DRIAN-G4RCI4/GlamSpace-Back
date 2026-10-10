@@ -364,3 +364,64 @@ BEGIN
     SELECT @Codigo = 0, @Mensaje = N'Paquete eliminado correctamente.';
 END
 GO
+
+-- =========================================================================
+-- BÚSQUEDA (Sprint 3 — HU-09)
+-- =========================================================================
+
+-- Búsqueda pública: solo salones publicados. Todos los filtros son opcionales y combinables;
+-- NULL, vacío o <= 0 significa "sin filtro". Nunca regresa error: sin resultados es éxito con lista vacía.
+-- Zona: coincidencia parcial sin importar mayúsculas ni acentos ("rio" encuentra "Tepeji del Río").
+-- PrecioMaximo: el salón entra si su paquete más barato (PrecioDesde) cuesta eso o menos.
+-- Paginado igual que sp_Salon_Listar: primer result set = datos del paginado, segundo = la página.
+CREATE OR ALTER PROCEDURE sp_Salon_Buscar
+    @Zona            NVARCHAR(200) = NULL,
+    @CapacidadMinima INT = NULL,
+    @PrecioMaximo    DECIMAL(10,2) = NULL,
+    @Pagina          INT = 1,
+    @TamanoPagina    INT = 10,
+    @Codigo          INT OUTPUT,
+    @Mensaje         NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+    SET @Zona = NULLIF(TRIM(@Zona), '');
+    IF @CapacidadMinima <= 0 SET @CapacidadMinima = NULL;
+    IF @PrecioMaximo <= 0 SET @PrecioMaximo = NULL;
+
+    SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, p.PrecioDesde,
+           (SELECT TOP 1 f.Url FROM FotosSalon f WHERE f.SalonId = s.Id ORDER BY f.Id) AS FotoPrincipal
+    INTO #Resultados
+    FROM Salones s
+    CROSS APPLY (SELECT MIN(Precio) AS PrecioDesde FROM Paquetes WHERE SalonId = s.Id) p
+    WHERE s.Estado = 'publicado'
+      AND p.PrecioDesde IS NOT NULL
+      AND (@Zona IS NULL
+           OR s.Zona COLLATE Latin1_General_CI_AI LIKE N'%' + @Zona + N'%' COLLATE Latin1_General_CI_AI)
+      AND (@CapacidadMinima IS NULL OR s.Capacidad >= @CapacidadMinima)
+      AND (@PrecioMaximo IS NULL OR p.PrecioDesde <= @PrecioMaximo);
+
+    DECLARE @Total INT = (SELECT COUNT(*) FROM #Resultados);
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN @Total = 0 THEN N'No se encontraron salones con esos filtros.'
+                           ELSE N'Consulta exitosa.' END;
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT Id, Nombre, Zona, Capacidad, PrecioDesde, FotoPrincipal
+    FROM #Resultados
+    ORDER BY PrecioDesde, Id
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+END
+GO
