@@ -1,0 +1,9 @@
+global using System.Data;
+global using System.Security.Cryptography;
+global using Dapper;
+global using GlamSpaces.Domain.Comun;
+global using GlamSpaces.Domain.Dtos;
+global using GlamSpaces.Domain.Entities;
+global using GlamSpaces.Domain.Interfaces;
+global using GlamSpaces.Infrastructure.Datos;
+global using GlamSpaces.Infrastructure.Seguridad;

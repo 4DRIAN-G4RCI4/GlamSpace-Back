@@ -1,4 +1,4 @@
-namespace GlamSpaces.Api.Models;
+namespace GlamSpaces.Domain.Entities;
 
 public class Usuario
 {
