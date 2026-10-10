@@ -1,4 +1,4 @@
-namespace GlamSpaces.Api.Models;
+namespace GlamSpaces.Domain.Entities;
 
 public class Paquete
 {
@@ -7,6 +7,4 @@ public class Paquete
     public string NombrePaquete { get; set; } = string.Empty;
     public string? Descripcion { get; set; }
     public decimal Precio { get; set; } // en pesos, siempre > 0
-
-    public Salon? Salon { get; set; }
 }
