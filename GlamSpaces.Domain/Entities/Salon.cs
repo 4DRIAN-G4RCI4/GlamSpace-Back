@@ -1,4 +1,4 @@
-namespace GlamSpaces.Api.Models;
+namespace GlamSpaces.Domain.Entities;
 
 public class Salon
 {
@@ -11,7 +11,6 @@ public class Salon
     public string Estado { get; set; } = "no_publicado"; // "publicado" o "no_publicado"
     public DateTime FechaCreacion { get; set; } = DateTime.Now;
 
-    public Usuario? Admin { get; set; }
     public List<Paquete> Paquetes { get; set; } = new();
     public List<FotoSalon> Fotos { get; set; } = new();
 }
