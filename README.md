@@ -8,8 +8,16 @@ Plataforma para encontrar y reservar salones de eventos.
 - Despliegue: GitHub Actions publica en Azure App Service (`glamspaces-api`) con cada push a `main`
 
 > **Estado actual:** la arquitectura y los endpoints vigentes son los del **[Sprint 2.5](#sprint-25--cambio-completo-de-la-infraestructura-del-backend)**,
-> más la búsqueda de salones del **[Sprint 3](#sprint-3--búsqueda-y-filtrado-de-salones-hu-09)**.
+> más el **Sprint 3**: [búsqueda y filtrado de salones (HU-09)](#sprint-3--búsqueda-y-filtrado-de-salones-hu-09)
+> y [índices para la búsqueda (HU-08)](#sprint-3--índices-y-consultas-para-búsqueda-de-salones-hu-08).
 > Las secciones de Sprint 1 y Sprint 2 se conservan como historial.
+
+| Sprint | Historias | Estado |
+|---|---|---|
+| Sprint 1 | HU-02, HU-03, HU-04: registro e inicio de sesión | ✅ En producción |
+| Sprint 2 | HU-06: CRUD de salones y paquetes | ✅ En producción |
+| Sprint 2.5 | Cambio completo de la infraestructura del backend | ✅ En producción |
+| Sprint 3 | HU-08: índices · HU-09: búsqueda y filtrado | ✅ En producción |
 
 ## Cómo correrla
 
@@ -20,6 +28,10 @@ Plataforma para encontrar y reservar salones de eventos.
 
    Todos se pueden volver a correr sin romper nada.
    `Database/04_DatosPrueba.sql` es **solo para bases locales o de prueba**: carga 6 salones de ejemplo.
+
+   > En `glamspaces-db` las tablas las creó Entity Framework en el Sprint 1, no `01_Tablas.sql`,
+   > así que **no tienen valores por defecto** (`FechaRegistro`, `FechaCreacion`, `Estado`).
+   > Por eso los SP y los scripts siempre mandan esos valores explícitamente.
 2. Guardar la cadena de conexión (no se sube a Git porque trae contraseña):
    ```bash
    cd GlamSpaces.Api
