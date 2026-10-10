@@ -16,8 +16,9 @@ DECLARE @AdminId INT = (SELECT Id FROM Usuarios WHERE Correo = 'admin.prueba@gla
 IF @AdminId IS NULL
 BEGIN
     -- PasswordHash no válido a propósito: esta cuenta no puede iniciar sesión.
-    INSERT INTO Usuarios (NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon)
-    VALUES ('Admin de Prueba', 'admin.prueba@glamspaces.com', 'sin-login', 'administrador', 'Salones de Prueba');
+    -- Fechas explícitas: en glamspaces-db las tablas las creó EF y no tienen DEFAULT.
+    INSERT INTO Usuarios (NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro)
+    VALUES ('Admin de Prueba', 'admin.prueba@glamspaces.com', 'sin-login', 'administrador', 'Salones de Prueba', GETDATE());
     SET @AdminId = SCOPE_IDENTITY();
 END
 
@@ -30,8 +31,8 @@ INSERT INTO @Salones VALUES
     (N'[Prueba] Quinta Las Palmas',  N'Mixquiahuala, Hgo.',    250, 'publicado',    N'12000'),
     (N'[Prueba] Jardín Oculto',      N'Tula de Allende, Hgo.', 500, 'no_publicado', N'1000');
 
-INSERT INTO Salones (AdminId, Nombre, Zona, Capacidad, Estado)
-SELECT @AdminId, s.Nombre, s.Zona, s.Capacidad, s.Estado
+INSERT INTO Salones (AdminId, Nombre, Zona, Capacidad, Estado, FechaCreacion)
+SELECT @AdminId, s.Nombre, s.Zona, s.Capacidad, s.Estado, GETDATE()
 FROM @Salones s
 WHERE NOT EXISTS (SELECT 1 FROM Salones x WHERE x.Nombre = s.Nombre);
 
