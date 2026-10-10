@@ -17,6 +17,25 @@ internal static class StoredProcedure
     public static int Codigo(this DynamicParameters p) => p.Get<int>("Codigo");
     public static string Mensaje(this DynamicParameters p) => p.Get<string>("Mensaje");
 
+    // Ejecuta un SP paginado: primer result set = datos del paginado (se mapean directo
+    // a la respuesta), segundo = los registros de la página.
+    public static async Task<RespuestaPaginada<T>> Paginado<T>(
+        this IDbConnection db, string storedProcedure, DynamicParameters p)
+    {
+        RespuestaPaginada<T> respuesta;
+
+        using (var resultados = await db.QueryMultipleAsync(
+            storedProcedure, p, commandType: CommandType.StoredProcedure))
+        {
+            respuesta = await resultados.ReadFirstAsync<RespuestaPaginada<T>>();
+            respuesta.Datos = (await resultados.ReadAsync<T>()).ToList();
+        }
+
+        respuesta.Codigo = p.Codigo();
+        respuesta.Mensaje = p.Mensaje();
+        return respuesta;
+    }
+
     // Arma la RespuestaApi según el @Codigo que regresó el SP.
     public static RespuestaApi<TDto> Respuesta<TEntidad, TDto>(
         this DynamicParameters p, TEntidad? entidad, Func<TEntidad, TDto> mapear) where TEntidad : class
