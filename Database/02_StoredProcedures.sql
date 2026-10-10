@@ -9,6 +9,12 @@
      - Si hay error, hacen RETURN sin regresar result sets.
    ========================================================================= */
 
+-- Los SP guardan estas opciones al crearse. Deben estar en ON porque Salones tiene
+-- índices filtrados (03_Indices.sql); con OFF, los INSERT/UPDATE de los SP fallarían.
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
 -- =========================================================================
 -- USUARIOS
 -- =========================================================================
@@ -405,7 +411,10 @@ BEGIN
       AND (@Zona IS NULL
            OR s.Zona COLLATE Latin1_General_CI_AI LIKE N'%' + @Zona + N'%' COLLATE Latin1_General_CI_AI)
       AND (@CapacidadMinima IS NULL OR s.Capacidad >= @CapacidadMinima)
-      AND (@PrecioMaximo IS NULL OR p.PrecioDesde <= @PrecioMaximo);
+      AND (@PrecioMaximo IS NULL OR p.PrecioDesde <= @PrecioMaximo)
+    -- Con filtros opcionales, RECOMPILE arma el plan con los valores reales de cada búsqueda
+    -- para que SQL Server sí use los índices de 03_Indices.sql.
+    OPTION (RECOMPILE);
 
     DECLARE @Total INT = (SELECT COUNT(*) FROM #Resultados);
 
