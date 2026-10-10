@@ -7,7 +7,8 @@ Plataforma para encontrar y reservar salones de eventos.
 - Healthcheck: `/health` → `Healthy` si la API y la BD responden
 - Despliegue: GitHub Actions publica en Azure App Service (`glamspaces-api`) con cada push a `main`
 
-> **Estado actual:** la arquitectura y los endpoints vigentes son los del **[Sprint 2.5](#sprint-25--cambio-completo-de-la-infraestructura-del-backend)**.
+> **Estado actual:** la arquitectura y los endpoints vigentes son los del **[Sprint 2.5](#sprint-25--cambio-completo-de-la-infraestructura-del-backend)**,
+> más la búsqueda de salones del **[Sprint 3](#sprint-3--búsqueda-y-filtrado-de-salones-hu-09)**.
 > Las secciones de Sprint 1 y Sprint 2 se conservan como historial.
 
 ## Cómo correrla
@@ -330,4 +331,72 @@ Además:
 
 - **JWT**: sacar el `adminId` del token en vez de recibirlo en el body (marcado con `TODO` en los DTOs).
 - Subida de imágenes a almacenamiento externo.
-- Búsqueda pública de salones (HU-09).
+- ~~Búsqueda pública de salones (HU-09)~~ → hecha en el Sprint 3.
+
+---
+
+## Sprint 3 — Búsqueda y filtrado de salones (HU-09)
+
+Endpoint para que el frontend muestre a los clientes solo los salones que cumplen lo que buscan.
+Sigue la misma arquitectura del Sprint 2.5: un SP nuevo (`sp_Salon_Buscar`), el repositorio y el endpoint.
+
+### `POST /api/salones/buscar`
+
+Todos los filtros son **opcionales** y se pueden **combinar** sin generar errores:
+
+| Campo | Tipo | Qué hace |
+|---|---|---|
+| `zona` | string | Coincidencia parcial, sin importar mayúsculas ni acentos (`"rio"` encuentra `"Tepeji del Río"`) |
+| `capacidadMinima` | int | Salones con esa capacidad **o mayor** |
+| `precioMaximo` | number | Salones cuyo paquete más barato cuesta **eso o menos** |
+| `pagina`, `tamanoPagina` | int | Paginado (por defecto 1 y 10; máximo 100) |
+
+Si un filtro se manda vacío, en `null`, en 0 o negativo, se ignora.
+
+```json
+POST /api/salones/buscar
+{ "zona": "tula", "precioMaximo": 10000 }
+```
+
+Respuesta (formato paginado estándar):
+
+```json
+{
+  "pagina": 1, "tamanoPagina": 10, "totalRegistros": 1, "totalPaginas": 1,
+  "codigo": 0, "mensaje": "Consulta exitosa.", "exito": true,
+  "datos": [
+    {
+      "id": 1,
+      "nombre": "Salón Jardín Encanto",
+      "zona": "Tula de Allende, Hgo.",
+      "capacidad": 150,
+      "precioDesde": 8500.00,
+      "fotoPrincipal": "https://glamspacesfrontsa.z41.web.core.windows.net/img/salon-jardin-1.jpg"
+    }
+  ]
+}
+```
+
+- `precioDesde`: precio del paquete más barato del salón.
+- `fotoPrincipal`: la primera foto del salón; `null` si no tiene.
+
+### Reglas
+
+- Solo aparecen salones **publicados**. Como para publicar se requiere al menos un paquete, siempre hay `precioDesde`.
+- Resultados ordenados del más barato al más caro. Ordenar por relevancia o calificación está fuera de alcance.
+- **Sin resultados no es un error**: responde `codigo: 0`, `datos: []` y `mensaje: "No se encontraron salones con esos filtros."`.
+
+### Criterios de aceptación (verificados)
+
+| # | Caso | Resultado |
+|---|---|---|
+| 1 | Búsqueda sin filtros | Todos los salones publicados (los no publicados nunca aparecen) |
+| 2 | `capacidadMinima` | Solo salones con esa capacidad o mayor |
+| 3 | `zona` + `precioMaximo` | Solo los que cumplen ambas condiciones |
+| 4 | Ningún salón cumple | Lista vacía con respuesta exitosa |
+
+También se probaron los 3 filtros combinados, la zona sin acento, los filtros vacíos o negativos, el paginado, un tipo de dato incorrecto (`1001`) y la regresión completa del Sprint 2.5.
+
+### Para desplegar
+
+Volver a correr `Database/02_StoredProcedures.sql` en `glamspaces-db`. Es idempotente: solo agrega `sp_Salon_Buscar` y no cambia los demás.
