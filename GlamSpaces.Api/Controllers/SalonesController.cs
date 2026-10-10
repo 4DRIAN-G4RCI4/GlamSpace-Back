@@ -35,4 +35,11 @@ public class SalonesController : ApiControllerBase
     [HttpPost("listar")]
     public async Task<ActionResult<RespuestaPaginada<SalonResumenResponse>>> Listar([FromBody] ListarSalonesRequest request)
         => Responder(await _salones.Listar(request));
+
+    // POST /api/salones/buscar
+    // Cubre HU-09: búsqueda pública de salones publicados con filtros opcionales
+    // (zona, capacidad mínima, precio máximo). Sin resultados regresa lista vacía con éxito.
+    [HttpPost("buscar")]
+    public async Task<ActionResult<RespuestaPaginada<SalonBusquedaResponse>>> Buscar([FromBody] BuscarSalonesRequest request)
+        => Responder(await _salones.Buscar(request));
 }
