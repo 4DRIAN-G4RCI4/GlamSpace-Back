@@ -86,20 +86,38 @@ dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
 
 ## 4. Análisis inicial
 
-Primer análisis, antes de corregir cualquier hallazgo.
+Primer análisis de todo el código, antes de corregir cualquier hallazgo.
 
-- Fecha:
-- Commit analizado:
-- Quality Gate:
+- **Fecha:** 22/10/2026, 19:47 UTC
+- **Rama:** `Sprint4_Adrian` (rama principal del proyecto en SonarQube Cloud)
+- **Commit analizado:** `0feb322`
+- **Proyecto:** [4DRIAN-G4RCI4_GlamSpace-Back](https://sonarcloud.io/dashboard?id=4DRIAN-G4RCI4_GlamSpace-Back&branch=Sprint4_Adrian)
+- **Quality Gate:** ✅ **Aprobado** (Sonar way: las condiciones se evalúan sobre el código nuevo)
+- **Fuente:** API pública de SonarQube Cloud (`/api/measures/component`, `/api/qualitygates/project_status`, `/api/issues/search`, `/api/hotspots/search`)
 
-| Métrica | Valor |
-|---|---|
-| Bugs | |
-| Vulnerabilidades | |
-| Security hotspots | |
-| Code smells | |
-| Duplicación | |
-| Deuda técnica | |
+### Métricas
+
+| Métrica | Clave Sonar | Valor |
+|---|---|---|
+| Líneas de código | `ncloc` | 1,197 |
+| Bugs | `bugs` | 0 |
+| Vulnerabilidades | `vulnerabilities` | 1 |
+| Code smells | `code_smells` | 1 |
+| Security hotspots | `security_hotspots` | 0 |
+| Duplicación | `duplicated_lines_density` | 0.0 % |
+| Deuda técnica | `sqale_index` | 5 min |
+| Calificación de confiabilidad | `reliability_rating` | A (1.0) |
+| Calificación de seguridad | `security_rating` | **C (3.0)** |
+| Calificación de mantenibilidad | `sqale_rating` | A (1.0) |
+
+### Hallazgos (ordenados por severidad)
+
+| # | Severidad | Tipo | Regla | Archivo | Línea | Mensaje | Impacto | Esfuerzo |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Major | Vulnerabilidad | `csharpsquid:S5122` | `GlamSpaces.Api/Program.cs` | 51 | Restrict this CORS policy to trusted origins. | Seguridad / media | 4 h |
+| 2 | Major | Code smell | `csharpsquid:S6966` | `GlamSpaces.Api/Program.cs` | 75 | Await RunAsync instead. | Confiabilidad / media | 5 min |
+
+La calificación de seguridad **C** se debe al hallazgo 1. La deuda técnica (5 min) solo cuenta code smells, por eso no incluye las 4 h de la vulnerabilidad.
 
 <!-- CAPTURA: resumen del análisis inicial en sonarcloud.io (Overview) -->
 
