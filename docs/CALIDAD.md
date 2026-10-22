@@ -2,7 +2,47 @@
 
 Sprint 4 · Responsable: Adrian Adonai García Jiménez
 
-## 1. Herramienta elegida: SonarQube Cloud
+## 1. Comparativa de alternativas
+
+Se investigaron cuatro herramientas de análisis de código con opciones gratuitas para repositorios
+públicos y soporte de C# (el lenguaje del backend). Datos consultados el 22/10/2026 en la
+documentación oficial de cada herramienta (ver [Fuentes](#fuentes-de-la-comparativa)).
+
+| | **SonarQube Cloud** | **Codacy** | **DeepSource** | **GitHub CodeQL** |
+|---|---|---|---|---|
+| **Qué es** | Plataforma de calidad y seguridad de código de SonarSource (antes SonarCloud). | Plataforma de revisión automática que agrupa varias herramientas de análisis de terceros. | Plataforma de análisis estático con correcciones automáticas (*Autofix*). | Motor de análisis de seguridad de GitHub (*code scanning*). |
+| **Características** | Bugs, vulnerabilidades, code smells, *security hotspots*, duplicación, deuda técnica, cobertura (importada) y **Quality Gate**. | Análisis estático, detección de secretos, vulnerabilidades en dependencias, duplicación, complejidad, cobertura y *quality gates*. | Análisis estático, *Autofix*, detección de secretos, cobertura y reportes de calidad. | Análisis semántico de **seguridad**: el código se convierte en una base de datos y se consulta para encontrar vulnerabilidades. |
+| **Lenguajes** | 30+, incluidos **C#**, JavaScript/TypeScript, T-SQL, IaC y GitHub Actions. | 40+, incluido **C#** (con SonarC#, Roslyn, PMD CPD y Lizard). | Go, Rust, Java, Scala, **C#**, JavaScript, PHP, Python, Ruby, C/C++, Swift, Kotlin, SQL, Docker, Terraform y otros. | C/C++, **C#**, Go, Java/Kotlin, JavaScript/TypeScript, Python, Ruby y Swift (Rust en vista previa). |
+| **Métricas** | Bugs, vulnerabilidades, code smells, hotspots, % duplicación, deuda técnica (min), calificaciones A–E de confiabilidad/seguridad/mantenibilidad, cobertura, LOC. | Hallazgos por categoría, complejidad, % duplicación, cobertura y calificación general del repositorio. | Hallazgos por categoría (riesgo de bug, seguridad, rendimiento, anti-patrones, estilo) y cobertura. | Solo alertas de seguridad con su severidad. **No** mide code smells, duplicación, deuda técnica ni cobertura. |
+| **Integración con GitHub** | GitHub App + GitHub Actions (scanner de .NET). Comenta en los PR y publica el Quality Gate como *check*. | GitHub App con análisis en su nube (sin pipeline) o CLI en Actions. Comenta en los PR. | GitHub App + archivo `.deepsource.toml`. Comenta en los PR y puede abrir PR con correcciones. | **Nativa**: se activa en *Settings → Code security* (configuración por defecto) o con un workflow. Resultados en la pestaña *Security*. |
+| **Límites gratuitos** | Plan **Free**: proyectos privados hasta 50k LOC, públicos sin límite; solo analiza la rama principal y los PR hacia ella. Plan **OSS**: repositorios públicos ilimitados con análisis de ramas y PR. | Plan para *open source* gratuito en repositorios públicos. Ignora archivos de más de 150 KB y suspende el análisis de cuentas gratuitas inactivas. | Plan *Open Source* gratuito solo para repositorios públicos (los planes se reestructuraron en 2026). | Gratis en repositorios públicos. En privados requiere GitHub Code Security (de pago). |
+| **Ventajas** | Analizador de C# propio que corre durante la compilación (más preciso). Cubre calidad **y** seguridad en una sola herramienta. Quality Gate configurable. Estándar en la industria. | Se activa sin modificar el pipeline. Combina muchas herramientas y lenguajes. Fácil de empezar. | *Autofix* propone correcciones. Configuración simple con un archivo. Pocos falsos positivos. | Sin cuentas externas. Análisis de seguridad muy profundo. Sin costo en repos públicos. |
+| **Desventajas** | Requiere Java 21 en el CI. En el plan Free el análisis de ramas está limitado a la rama principal. Hay que desactivar *Automatic Analysis* para usar Actions. | Para C# depende de herramientas de terceros con configuración por separado. Métricas de deuda técnica menos detalladas. | Plan gratuito reciente (menos historial de estabilidad). Las funciones de IA y algunas integraciones son de pago. | **Solo seguridad**: no sirve para medir mantenibilidad, duplicación ni deuda técnica, que pide la práctica. |
+
+### Resumen contra las necesidades del proyecto
+
+| Necesidad | SonarQube Cloud | Codacy | DeepSource | GitHub CodeQL |
+|---|---|---|---|---|
+| Análisis profundo de C# / .NET | ✅ Analizador propio durante el build | ⚠️ Herramientas de terceros | ✅ | ✅ (solo seguridad) |
+| Bugs + vulnerabilidades + code smells | ✅ | ✅ | ✅ | ❌ Solo vulnerabilidades |
+| Duplicación y deuda técnica | ✅ Ambas | ⚠️ Duplicación; deuda menos detallada | ⚠️ Parcial | ❌ |
+| Quality Gate (aprobado / no aprobado) | ✅ | ✅ | ⚠️ Limitado | ❌ |
+| Gratis para un repositorio público | ✅ | ✅ | ✅ | ✅ |
+| Análisis automático con GitHub Actions y comentarios en PR | ✅ | ✅ | ✅ | ✅ |
+
+**Conclusión:** CodeQL se descarta porque solo analiza seguridad. Entre las tres restantes,
+**SonarQube Cloud** es la única que cubre con detalle todas las métricas que pide la práctica
+(incluida la deuda técnica), analiza C# durante la compilación y tiene un Quality Gate completo.
+Su justificación técnica está en la sección 2.
+
+### Fuentes de la comparativa
+
+- SonarQube Cloud: [Subscription plans](https://docs.sonarsource.com/sonarqube-cloud/administering-sonarcloud/managing-subscription/subscription-plans), [Branch analysis](https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/branch-analysis/branch-analysis), [Requisitos del scanner (Java 21)](https://docs.sonarsource.com/sonarqube-cloud/analyzing-source-code/scanners/scanner-environment/general-requirements)
+- Codacy: [Supported languages and tools](https://docs.codacy.com/getting-started/supported-languages-and-tools/), [Organization overview (planes open source)](https://docs.codacy.com/organizations/reporting/organization-overview)
+- DeepSource: [Core analyzers](https://docs.deepsource.com/docs/platform/reference/core-analyzers); planes: [reseña de precios 2026](https://aicodereview.cc/blog/deepsource-pricing) (fuente de terceros)
+- GitHub CodeQL: [About code scanning with CodeQL](https://docs.github.com/en/code-security/concepts/code-scanning/codeql/codeql-code-scanning)
+
+## 2. Herramienta elegida: SonarQube Cloud
 
 **SonarQube Cloud** (antes SonarCloud) es el servicio en la nube de SonarSource para el análisis estático de código.
 
@@ -23,7 +63,7 @@ Sprint 4 · Responsable: Adrian Adonai García Jiménez
 
 Se eligió sobre otras opciones porque cubre en una sola herramienta todos los aspectos de calidad (bugs, seguridad, mantenibilidad y duplicación), en lugar de combinar varios analizadores, y porque se integra con el flujo de ramas y PRs que ya usa el equipo.
 
-## 2. Instalación y configuración
+## 3. Instalación y configuración
 
 1. **Crear el proyecto en sonarcloud.io**
    - Entrar a https://sonarcloud.io con la cuenta de GitHub.
@@ -44,7 +84,7 @@ Se eligió sobre otras opciones porque cubre en una sola herramienta todos los a
 - **Java 21 o mayor.** SonarQube Cloud retiró el soporte de Java 17 para los scanners el 20 de julio de 2026.
 - `dotnet-sonarscanner` (herramienta global de .NET).
 
-## 3. Cómo ejecutar el análisis
+## 4. Cómo ejecutar el análisis
 
 ### Automático (GitHub Actions)
 
@@ -84,7 +124,7 @@ dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
 
 > Para el análisis local también hay que tener *Automatic Analysis* desactivado.
 
-## 4. Análisis inicial
+## 5. Análisis inicial
 
 Primer análisis de todo el código, antes de corregir cualquier hallazgo.
 
@@ -123,7 +163,7 @@ La calificación de seguridad **C** se debe al hallazgo 1. La deuda técnica (5 
 
 <!-- CAPTURA: lista de hallazgos del análisis inicial (Issues) -->
 
-## 5. Hallazgos corregidos
+## 6. Hallazgos corregidos
 
 | # | Hallazgo | Regla Sonar | Archivo y línea | Por qué es un problema | Cómo se corrigió | Commit |
 |---|---|---|---|---|---|---|
@@ -150,7 +190,7 @@ positivo. El número bajo se explica por decisiones que ya se habían tomado en 
 
 <!-- CAPTURA: hallazgo 2 (S6966) antes/después -->
 
-## 6. Análisis final
+## 7. Análisis final
 
 Análisis de todo el código después de las correcciones.
 
