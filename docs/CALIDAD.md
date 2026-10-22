@@ -49,8 +49,12 @@ Se eligió sobre otras opciones porque cubre en una sola herramienta todos los a
 ### Automático (GitHub Actions)
 
 El workflow `.github/workflows/sonar.yml` corre:
-- en cada **push a `develop` y a `main`**;
+- en cada **push a `develop`, a `main` y a `Sprint4_Adrian`**;
 - en cada **Pull Request** (cuando se abre, se actualiza o se reabre).
+
+> En un Pull Request, Sonar solo analiza el **código nuevo** del PR. Para el análisis completo de
+> todo el código, la rama principal del proyecto en SonarQube Cloud se configuró como `Sprint4_Adrian`,
+> y cada push a esa rama genera un análisis de todo el proyecto.
 
 Pasos del workflow: checkout con historial completo (`fetch-depth: 0`) → .NET 9 → Java 21 → instalar `dotnet-sonarscanner` → `begin` → `dotnet build GlamSpaces.sln` → `end`. El resultado aparece en sonarcloud.io y en el PR.
 
