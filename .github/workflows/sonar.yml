@@ -56,7 +56,7 @@ jobs:
       - name: Iniciar análisis
         run: >
           dotnet sonarscanner begin
-          /k:"4drian-g4rci4_GlamSpace-Back"
+          /k:"4DRIAN-G4RCI4_GlamSpace-Back"
           /o:"4drian-g4rci4"
           /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
           /d:sonar.host.url="https://sonarcloud.io"

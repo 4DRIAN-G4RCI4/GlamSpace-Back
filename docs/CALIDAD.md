@@ -28,7 +28,7 @@ Se eligió sobre otras opciones porque cubre en una sola herramienta todos los a
 1. **Crear el proyecto en sonarcloud.io**
    - Entrar a https://sonarcloud.io con la cuenta de GitHub.
    - *+* → *Analyze new project* → elegir la organización `4drian-g4rci4` → seleccionar el repo `GlamSpace-Back`.
-   - Verificar que la clave del proyecto sea `4drian-g4rci4_GlamSpace-Back`.
+   - Verificar que la clave del proyecto sea `4DRIAN-G4RCI4_GlamSpace-Back`.
 2. **Generar el token**
    - En sonarcloud.io: *My Account* → *Security* → *Generate Tokens*. Copiarlo (solo se muestra una vez).
 3. **Guardar el token en GitHub Secrets** (nunca en el repositorio)
@@ -69,7 +69,7 @@ Con el token en una variable de entorno (nunca escrito en un archivo del repo):
 dotnet tool install --global dotnet-sonarscanner
 $env:SONAR_TOKEN = "<tu token>"
 
-dotnet sonarscanner begin /k:"4drian-g4rci4_GlamSpace-Back" /o:"4drian-g4rci4" /d:sonar.token="$env:SONAR_TOKEN" /d:sonar.host.url="https://sonarcloud.io"
+dotnet sonarscanner begin /k:"4DRIAN-G4RCI4_GlamSpace-Back" /o:"4drian-g4rci4" /d:sonar.token="$env:SONAR_TOKEN" /d:sonar.host.url="https://sonarcloud.io"
 dotnet build GlamSpaces.sln
 dotnet sonarscanner end /d:sonar.token="$env:SONAR_TOKEN"
 ```
@@ -77,7 +77,7 @@ dotnet sonarscanner end /d:sonar.token="$env:SONAR_TOKEN"
 ```bash
 # Bash
 export SONAR_TOKEN="<tu token>"
-dotnet sonarscanner begin /k:"4drian-g4rci4_GlamSpace-Back" /o:"4drian-g4rci4" /d:sonar.token="$SONAR_TOKEN" /d:sonar.host.url="https://sonarcloud.io"
+dotnet sonarscanner begin /k:"4DRIAN-G4RCI4_GlamSpace-Back" /o:"4drian-g4rci4" /d:sonar.token="$SONAR_TOKEN" /d:sonar.host.url="https://sonarcloud.io"
 dotnet build GlamSpaces.sln
 dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
 ```
