@@ -48,3 +48,27 @@ FROM Salones x JOIN Paquetes p ON p.SalonId = x.Id
 WHERE x.Nombre LIKE N'[[]Prueba]%'
 GROUP BY x.Id, x.Nombre, x.Zona, x.Capacidad, x.Estado
 ORDER BY x.Id;
+
+-- =========================================================================
+-- Reservaciones de prueba (Sprint 4 — HU-12)
+-- '[Prueba] Jardín Encanto' en noviembre 2026: 2 confirmadas (14 y 21) y 1 pendiente (28).
+-- sp_Salon_Disponibilidad debe regresar solo el 14 y el 21.
+-- =========================================================================
+
+DECLARE @SalonEncanto INT = (SELECT Id FROM Salones WHERE Nombre = N'[Prueba] Jardín Encanto');
+
+-- Fecha y estado explícitos: en glamspaces-db las tablas pueden no tener DEFAULT.
+INSERT INTO Reservaciones (SalonId, ClienteId, FechaEvento, Estado, FechaCreacion)
+SELECT @SalonEncanto, @AdminId, r.FechaEvento, r.Estado, GETDATE()
+FROM (VALUES
+    (CAST('2026-11-14' AS DATE), 'confirmada'),
+    (CAST('2026-11-21' AS DATE), 'confirmada'),
+    (CAST('2026-11-28' AS DATE), 'pendiente')
+) r (FechaEvento, Estado)
+WHERE NOT EXISTS (SELECT 1 FROM Reservaciones x
+                  WHERE x.SalonId = @SalonEncanto AND x.FechaEvento = r.FechaEvento);
+
+SELECT Id, SalonId, FechaEvento, Estado
+FROM Reservaciones
+WHERE SalonId = @SalonEncanto
+ORDER BY FechaEvento;

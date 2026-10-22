@@ -88,4 +88,23 @@ public class SalonRepositorio : ISalonRepositorio
         });
         return await _db.Paginado<SalonBusquedaResponse>("sp_Salon_Buscar", p);
     }
+
+    public async Task<RespuestaApi<DisponibilidadResponse>> Disponibilidad(DisponibilidadRequest request)
+    {
+        var p = StoredProcedure.Parametros(new { request.SalonId, request.Anio, request.Mes });
+        var fechas = await _db.QueryAsync<DateTime>(
+            "sp_Salon_Disponibilidad", p, commandType: CommandType.StoredProcedure);
+
+        if (p.Codigo() != CodigosError.Exito)
+            return RespuestaApi<DisponibilidadResponse>.Error(p.Codigo(), p.Mensaje());
+
+        var disponibilidad = new DisponibilidadResponse
+        {
+            SalonId = request.SalonId,
+            Anio = request.Anio,
+            Mes = request.Mes,
+            FechasOcupadas = fechas.Select(f => f.ToString("yyyy-MM-dd")).ToList(),
+        };
+        return RespuestaApi<DisponibilidadResponse>.Ok(disponibilidad, p.Mensaje());
+    }
 }
