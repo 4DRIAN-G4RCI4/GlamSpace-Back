@@ -20,6 +20,7 @@ public class SalonesController : ApiControllerBase
 
     // POST /api/salones/obtener
     // Detalle del salón con su lista completa de paquetes y fotos.
+    // También cubre HU-12 (detalle).
     [HttpPost("obtener")]
     public async Task<ActionResult<RespuestaApi<SalonResponse>>> Obtener([FromBody] IdRequest request)
         => Responder(await _salones.Obtener(request.Id));
@@ -42,4 +43,11 @@ public class SalonesController : ApiControllerBase
     [HttpPost("buscar")]
     public async Task<ActionResult<RespuestaPaginada<SalonBusquedaResponse>>> Buscar([FromBody] BuscarSalonesRequest request)
         => Responder(await _salones.Buscar(request));
+
+    // POST /api/salones/disponibilidad
+    // Cubre HU-12: fechas ocupadas del salón en un mes (solo reservaciones confirmadas).
+    // Un mes sin fechas ocupadas regresa lista vacía con éxito.
+    [HttpPost("disponibilidad")]
+    public async Task<ActionResult<RespuestaApi<DisponibilidadResponse>>> Disponibilidad([FromBody] DisponibilidadRequest request)
+        => Responder(await _salones.Disponibilidad(request));
 }

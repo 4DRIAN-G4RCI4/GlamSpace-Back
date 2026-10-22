@@ -17,6 +17,7 @@ public interface ISalonRepositorio
     Task<RespuestaApi<SalonResponse>> Actualizar(ActualizarSalonRequest request);
     Task<RespuestaPaginada<SalonResumenResponse>> Listar(ListarSalonesRequest request);
     Task<RespuestaPaginada<SalonBusquedaResponse>> Buscar(BuscarSalonesRequest request);
+    Task<RespuestaApi<DisponibilidadResponse>> Disponibilidad(DisponibilidadRequest request);
 }
 
 public interface IPaqueteRepositorio

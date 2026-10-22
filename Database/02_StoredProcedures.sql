@@ -434,3 +434,47 @@ BEGIN
     FETCH NEXT @TamanoPagina ROWS ONLY;
 END
 GO
+
+-- =========================================================================
+-- DISPONIBILIDAD (Sprint 4 — HU-12)
+-- =========================================================================
+
+-- Fechas ocupadas de un salón en un mes. Solo cuentan las reservaciones 'confirmada';
+-- las pendientes y canceladas no ocupan la fecha.
+-- Un mes sin fechas ocupadas NO es error: éxito con result set vacío.
+-- Regresa un solo result set con las fechas (FechaEvento) ordenadas.
+CREATE OR ALTER PROCEDURE sp_Salon_Disponibilidad
+    @SalonId INT,
+    @Anio    INT,
+    @Mes     INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF ISNULL(@Mes, 0) NOT BETWEEN 1 AND 12 OR ISNULL(@Anio, 0) NOT BETWEEN 2000 AND 2100
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Mes o año inválido.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    DECLARE @Inicio DATE = DATEFROMPARTS(@Anio, @Mes, 1);
+    DECLARE @Fin DATE = DATEADD(MONTH, 1, @Inicio);
+
+    SELECT DISTINCT FechaEvento
+    INTO #Fechas
+    FROM Reservaciones
+    WHERE SalonId = @SalonId
+      AND Estado = 'confirmada'
+      AND FechaEvento >= @Inicio
+      AND FechaEvento < @Fin;
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN NOT EXISTS (SELECT 1 FROM #Fechas)
+                           THEN N'El salón no tiene fechas ocupadas en ese mes.'
+                           ELSE N'Consulta exitosa.' END;
+
+    SELECT FechaEvento FROM #Fechas ORDER BY FechaEvento;
+END
+GO

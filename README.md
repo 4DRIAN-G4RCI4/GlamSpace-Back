@@ -18,6 +18,7 @@ Plataforma para encontrar y reservar salones de eventos.
 | Sprint 2 | HU-06: CRUD de salones y paquetes | ✅ En producción |
 | Sprint 2.5 | Cambio completo de la infraestructura del backend | ✅ En producción |
 | Sprint 3 | HU-08: índices · HU-09: búsqueda y filtrado | ✅ En producción |
+| Sprint 4 | HU-11, HU-12: tabla de reservaciones · detalle y disponibilidad del salón | 🚧 En desarrollo |
 
 ## Cómo correrla
 
@@ -470,3 +471,88 @@ Correr en `glamspaces-db`, en este orden:
 2. `Database/03_Indices.sql`: crea los índices.
 
 Ambos son idempotentes. **No correr** `04_DatosPrueba.sql` en producción.
+
+---
+
+## Sprint 4 — Detalle y disponibilidad del salón (HU-12)
+
+Endpoint para que el frontend muestre, en el detalle del salón, un calendario con las fechas ya ocupadas.
+Sigue la misma arquitectura del Sprint 2.5: un SP nuevo (`sp_Salon_Disponibilidad`), el repositorio y el endpoint.
+El detalle del salón (datos, paquetes y fotos) ya lo regresa `POST /api/salones/obtener`.
+
+### Tabla `Reservaciones` (HU-11)
+
+Nueva en `Database/01_Tablas.sql`:
+
+| Columna | Tipo | Notas |
+|---|---|---|
+| `Id` | INT IDENTITY | Llave primaria |
+| `SalonId` | INT | FK → `Salones` |
+| `ClienteId` | INT | FK → `Usuarios` |
+| `PaqueteId` | INT NULL | FK → `Paquetes` |
+| `FechaEvento` | DATE | Día del evento |
+| `Estado` | NVARCHAR(20) | `pendiente` (por defecto), `confirmada` o `cancelada` |
+| `FechaCreacion` | DATETIME2 | Por defecto `GETDATE()` |
+
+Índices nuevos en `Database/03_Indices.sql`:
+
+| Índice | Columnas | Para qué |
+|---|---|---|
+| `IX_Reservaciones_Salon_Fecha` | `SalonId, FechaEvento` + incluye `Estado` | La disponibilidad de un mes busca directo por salón y rango de fechas. |
+| `UX_Reservaciones_Confirmada` | `SalonId, FechaEvento`, **único y filtrado** `WHERE Estado = 'confirmada'` | Un salón no puede tener 2 reservaciones confirmadas el mismo día. Las pendientes y canceladas sí pueden repetir fecha. |
+
+### `POST /api/salones/disponibilidad`
+
+| Campo | Tipo | Qué hace |
+|---|---|---|
+| `salonId` | int | Salón a consultar |
+| `anio` | int | Año (2000 a 2100) |
+| `mes` | int | Mes (1 a 12) |
+
+```json
+POST /api/salones/disponibilidad
+{ "salonId": 1, "anio": 2026, "mes": 11 }
+```
+
+Respuesta:
+
+```json
+{
+  "codigo": 0, "mensaje": "Consulta exitosa.", "exito": true,
+  "datos": {
+    "salonId": 1,
+    "anio": 2026,
+    "mes": 11,
+    "fechasOcupadas": ["2026-11-14", "2026-11-21"]
+  }
+}
+```
+
+- `fechasOcupadas`: fechas en formato `yyyy-MM-dd`, ordenadas; lista vacía si no hay.
+
+### Reglas
+
+- Solo las reservaciones **confirmadas** ocupan la fecha. Las `pendiente` y `cancelada` no aparecen.
+- **Un mes sin ocupación no es un error**: responde `codigo: 0`, `fechasOcupadas: []` y `mensaje: "El salón no tiene fechas ocupadas en ese mes."`.
+- Mes fuera de 1–12 o año fuera de 2000–2100 → `1001` (`"Mes o año inválido."`).
+- Salón que no existe → `2001` (`"El salón no existe."`).
+
+### Criterios de aceptación
+
+Con `04_DatosPrueba.sql`, "[Prueba] Jardín Encanto" tiene en noviembre 2026: 2 confirmadas (14 y 21) y 1 pendiente (28).
+
+| # | Caso | Resultado |
+|---|---|---|
+| 1 | El frontend solicita el detalle de un salón existente | La API responde con sus paquetes, fotos y datos generales (`POST /api/salones/obtener`) |
+| 2 | El frontend solicita la disponibilidad de un mes | Regresa la lista de fechas ocupadas de ese salón en ese mes (`POST /api/salones/disponibilidad`) |
+| 3 | Un salón no tiene fechas ocupadas en el mes solicitado | Regresa una lista vacía de fechas ocupadas |
+| 4 | Se solicita el detalle de un salón que no existe | Error controlado de "no encontrado" (código `2001`, HTTP 404) |
+
+### Para desplegar (HU-11 y HU-12)
+
+Correr en `glamspaces-db`, en este orden:
+1. `Database/01_Tablas.sql`: crea la tabla `Reservaciones`.
+2. `Database/02_StoredProcedures.sql`: agrega `sp_Salon_Disponibilidad`.
+3. `Database/03_Indices.sql`: crea los índices de reservaciones.
+
+Todos son idempotentes. **No correr** `04_DatosPrueba.sql` en producción.
