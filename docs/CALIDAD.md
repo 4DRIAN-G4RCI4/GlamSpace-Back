@@ -125,17 +125,30 @@ La calificación de seguridad **C** se debe al hallazgo 1. La deuda técnica (5 
 
 ## 5. Hallazgos corregidos
 
-| # | Hallazgo | Regla Sonar | Archivo | Por qué es un problema | Cómo se corrigió | Commit |
+| # | Hallazgo | Regla Sonar | Archivo y línea | Por qué es un problema | Cómo se corrigió | Commit |
 |---|---|---|---|---|---|---|
-| 1 | | | | | | |
-| 2 | | | | | | |
-| 3 | | | | | | |
+| 1 | Vulnerabilidad (Major): *Restrict this CORS policy to trusted origins.* | `csharpsquid:S5122` | `GlamSpaces.Api/Program.cs:51` | La política usaba `AllowAnyOrigin()`: **cualquier sitio web** podía llamar a la API desde el navegador de un usuario y leer sus respuestas (datos de salones, usuarios, resultados de login). Rompe la protección de "mismo origen" del navegador y facilita ataques desde páginas de terceros. | Se cambió a `WithOrigins(...)` con una **lista de orígenes permitidos**: el sitio del frontend en Azure y los puertos locales de Expo web (8081 y 19006). La lista vive en `appsettings.json` (`Cors:OrigenesPermitidos`) y en Azure se puede ajustar sin recompilar (`Cors__OrigenesPermitidos__0`, ...). Se probó con un *preflight* `OPTIONS`: el front de Azure y Expo local reciben `Access-Control-Allow-Origin`; un origen desconocido no lo recibe y el navegador bloquea la llamada. | `f55ddc1` |
+| 2 | Code smell (Major, confiabilidad): *Await RunAsync instead.* | `csharpsquid:S6966` | `GlamSpaces.Api/Program.cs:75` | `app.Run()` es la versión **síncrona**: bloquea el hilo principal mientras la API está en ejecución, cuando el código ya es asíncrono (`Program.cs` usa *top-level statements* con `await`). Mezclar llamadas bloqueantes con código asíncrono puede causar bloqueos y desperdicia hilos. | Se reemplazó por `await app.RunAsync();`. Se verificó que la API arranca y Swagger responde igual. | `1c5faae` |
 
-<!-- CAPTURA: hallazgo 1 antes/después -->
+### ¿Por qué se corrigieron 2 hallazgos y no 3?
 
-<!-- CAPTURA: hallazgo 2 antes/después -->
+El análisis inicial de SonarQube Cloud (perfil **Sonar way**, el perfil por defecto) sobre las 1,197 líneas
+del backend reportó **solo 2 hallazgos**: 0 bugs, 1 vulnerabilidad, 1 code smell, 0 *security hotspots*
+y 0 % de duplicación. **Se corrigieron los 2 (el 100 %).**
 
-<!-- CAPTURA: hallazgo 3 antes/después -->
+No se agregó un tercero porque la regla del ejercicio prohíbe "inventar" o forzar hallazgos: no hay
+otro hallazgo real que corregir, y no se usaron exclusiones, `//NOSONAR` ni se marcó nada como falso
+positivo. El número bajo se explica por decisiones que ya se habían tomado en los sprints anteriores:
+
+- **Arquitectura por capas** con controllers de una sola línea: casi no hay lógica que duplicar ni métodos largos.
+- **Reglas de negocio en stored procedures**: el C# solo orquesta (llama al SP y arma la respuesta).
+- **Contraseñas con PBKDF2** (100,000 iteraciones, salt por usuario) y comparación en tiempo constante (`FixedTimeEquals`): evita los hallazgos típicos de criptografía débil.
+- **Consultas parametrizadas** (Dapper con parámetros): no hay SQL armado con concatenación de texto, que es la fuente común de vulnerabilidades de inyección.
+- **Cadena de conexión fuera del repositorio** (user-secrets / Azure): no hay credenciales en el código.
+
+<!-- CAPTURA: hallazgo 1 (S5122) antes/después -->
+
+<!-- CAPTURA: hallazgo 2 (S6966) antes/después -->
 
 ## 6. Análisis final
 
