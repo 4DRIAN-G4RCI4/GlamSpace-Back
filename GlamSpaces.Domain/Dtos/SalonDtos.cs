@@ -33,6 +33,23 @@ public class BuscarSalonesRequest : PaginacionRequest
     public decimal? PrecioMaximo { get; set; } // compara contra el paquete más barato del salón
 }
 
+// POST /api/salones/disponibilidad (HU-12). Mes de 1 a 12, año de 2000 a 2100.
+public class DisponibilidadRequest
+{
+    public int SalonId { get; set; }
+    public int Anio { get; set; }
+    public int Mes { get; set; }
+}
+
+// Fechas ocupadas del salón en el mes (solo reservaciones confirmadas).
+public class DisponibilidadResponse
+{
+    public int SalonId { get; set; }
+    public int Anio { get; set; }
+    public int Mes { get; set; }
+    public List<string> FechasOcupadas { get; set; } = new(); // "yyyy-MM-dd"; vacía si no hay
+}
+
 // Detalle del salón con sus paquetes y fotos.
 public class SalonResponse
 {

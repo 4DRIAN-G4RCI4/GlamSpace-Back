@@ -40,3 +40,23 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_FotosSalon_SalonId')
         ON FotosSalon (SalonId)
         INCLUDE (Url);
 GO
+
+-- =========================================================================
+-- Sprint 4 — Reservaciones (HU-11 / HU-12)
+-- =========================================================================
+
+-- Disponibilidad del salón por mes (sp_Salon_Disponibilidad): busca por salón y rango
+-- de fechas; Estado va incluido para filtrar las confirmadas sin leer la tabla.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Reservaciones_Salon_Fecha')
+    CREATE NONCLUSTERED INDEX IX_Reservaciones_Salon_Fecha
+        ON Reservaciones (SalonId, FechaEvento)
+        INCLUDE (Estado);
+GO
+
+-- Regla de negocio: un salón no puede tener 2 reservaciones confirmadas el mismo día.
+-- Único y filtrado: las pendientes y canceladas sí pueden repetir fecha.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Reservaciones_Confirmada')
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Reservaciones_Confirmada
+        ON Reservaciones (SalonId, FechaEvento)
+        WHERE Estado = 'confirmada';
+GO
