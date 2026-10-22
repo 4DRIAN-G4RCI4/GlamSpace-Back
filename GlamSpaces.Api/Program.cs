@@ -42,13 +42,16 @@ builder.Services.AddControllers().ConfigureApiBehaviorOptions(opciones =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// CORS abierto para el frontend (Expo web corre en otro puerto).
-// Para producción habría que restringir esto a los dominios reales.
+// CORS: solo los orígenes del frontend pueden llamar a la API desde un navegador.
+// La lista vive en appsettings.json (Cors:OrigenesPermitidos); en Azure se puede cambiar
+// sin recompilar con las variables Cors__OrigenesPermitidos__0, __1, ...
+// (La app nativa no usa CORS; esto solo aplica a navegadores.)
+var origenesPermitidos = builder.Configuration.GetSection("Cors:OrigenesPermitidos").Get<string[]>() ?? [];
 builder.Services.AddCors(opciones =>
 {
-    opciones.AddPolicy("FrontendDev", politica =>
+    opciones.AddPolicy("Frontend", politica =>
     {
-        politica.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+        politica.WithOrigins(origenesPermitidos).AllowAnyHeader().AllowAnyMethod();
     });
 });
 
@@ -67,9 +70,10 @@ app.UseExceptionHandler(errores => errores.Run(async contexto =>
 app.UseSwagger();
 app.UseSwaggerUI();
 
-app.UseCors("FrontendDev");
+app.UseCors("Frontend");
 app.UseAuthorization();
 app.MapControllers();
 app.MapHealthChecks("/health");
 
-app.Run();
+// Versión asíncrona: no bloquea el hilo principal mientras la API está en ejecución.
+await app.RunAsync();
