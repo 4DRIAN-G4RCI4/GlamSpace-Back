@@ -29,6 +29,7 @@ Plataforma para encontrar y reservar salones de eventos.
 
    Todos se pueden volver a correr sin romper nada.
    `Database/04_DatosPrueba.sql` es **solo para bases locales o de prueba**: carga 6 salones de ejemplo.
+   `Database/05_PruebasHU11.sql` verifica los criterios de la HU-11 sobre esos datos (no deja cambios).
 
    > En `glamspaces-db` las tablas las creó Entity Framework en el Sprint 1, no `01_Tablas.sql`,
    > así que **no tienen valores por defecto** (`FechaRegistro`, `FechaCreacion`, `Estado`).
@@ -556,3 +557,56 @@ Correr en `glamspaces-db`, en este orden:
 3. `Database/03_Indices.sql`: crea los índices de reservaciones.
 
 Todos son idempotentes. **No correr** `04_DatosPrueba.sql` en producción.
+
+---
+
+## Sprint 4 — Modelo de calendario de disponibilidad (HU-11)
+
+Responsable: Adrian Adonai García Jiménez.
+
+Modelo de datos que registra las fechas ocupadas por salón para que la API calcule su
+disponibilidad real. Se implementó junto con la HU-12 (ver la sección anterior) y aquí se
+documentan y verifican sus criterios.
+
+### Cómo funciona el modelo
+
+| Pieza | Dónde | Qué hace |
+|---|---|---|
+| Tabla `Reservaciones` | `Database/01_Tablas.sql` | Una fila por reservación: salón, cliente, paquete, `FechaEvento` (día completo) y `Estado` (`pendiente`, `confirmada` o `cancelada`). |
+| Cálculo de fechas ocupadas | `sp_Salon_Disponibilidad` en `Database/02_StoredProcedures.sql` | Una fecha está ocupada si el salón tiene una reservación **confirmada** ese día. |
+| Restricción en la base de datos | Índice `UX_Reservaciones_Confirmada` en `Database/03_Indices.sql` | Índice **único filtrado** sobre `(SalonId, FechaEvento) WHERE Estado = 'confirmada'`: SQL Server rechaza (error 2601) una segunda confirmada del mismo salón y día, ya sea al insertarla o al cambiar una pendiente a confirmada. |
+| Datos de ejemplo | `Database/04_DatosPrueba.sql` | "[Prueba] Jardín Encanto", noviembre 2026: 14 y 21 confirmadas, 28 pendiente. |
+
+**¿Por qué un índice único filtrado y no una validación en C# o en el SP?** La regla vive en la
+base de datos, así que se cumple aunque la reservación se confirme desde cualquier SP, script o
+herramienta, y no depende de que el código la revise. Además es a prueba de concurrencia: si dos
+confirmaciones del mismo día llegan al mismo tiempo, solo una entra.
+
+### Regla de negocio
+
+- Solo las reservaciones en estado **`confirmada`** bloquean una fecha.
+- Puede haber varias `pendiente` (o `cancelada`) el mismo día: son solicitudes que aún no ocupan el salón.
+- Solo se maneja **día completo**. La disponibilidad por horario queda fuera de alcance.
+
+### Criterios de aceptación (verificados con `Database/05_PruebasHU11.sql`)
+
+| # | Dado que / Cuando | Entonces | Resultado |
+|---|---|---|---|
+| 1 | Existe una reservación confirmada / se consulta la disponibilidad del salón | Esa fecha aparece como ocupada | ✅ Jardín Encanto nov-2026 → `2026-11-14, 2026-11-21` (el 28 está pendiente y no aparece) |
+| 2 | Se intenta confirmar dos reservaciones para la misma fecha y salón | La base de datos lo impide | ✅ Error 2601 por `UX_Reservaciones_Confirmada`, tanto al insertar una segunda confirmada como al confirmar una pendiente |
+| 3 | Un salón no tiene reservaciones confirmadas / se consulta su disponibilidad | Todas sus fechas aparecen disponibles | ✅ Quinta Las Palmas → lista vacía y "El salón no tiene fechas ocupadas en ese mes." |
+| 4 | Se ejecuta el script semilla | Al menos un salón queda con fechas ocupadas de ejemplo | ✅ 2 reservaciones confirmadas de ejemplo |
+| — | Regla: dos pendientes el mismo día | Se permiten | ✅ |
+
+### Cómo correr las pruebas
+
+En una base **local o de prueba**, después de los scripts 01 a 04:
+
+```bash
+sqlcmd -S "(localdb)\MSSQLLocalDB" -d GlamSpacesPrueba -f 65001 -i Database/05_PruebasHU11.sql
+```
+
+Salida esperada: `RESULTADO HU-11: 6 de 6 pruebas correctas.`
+
+El script corre dentro de una transacción y al final hace `ROLLBACK`, así que **no deja datos** y
+se puede repetir. Necesita los datos de `04_DatosPrueba.sql`, por eso no aplica en producción.
