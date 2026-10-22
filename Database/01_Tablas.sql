@@ -60,3 +60,22 @@ BEGIN
     );
 END
 GO
+
+-- Sprint 4 — HU-11. Solo las reservaciones 'confirmada' ocupan la fecha del salón (HU-12).
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Reservaciones')
+BEGIN
+    CREATE TABLE Reservaciones (
+        Id            INT IDENTITY(1,1) PRIMARY KEY,
+        SalonId       INT NOT NULL,
+        ClienteId     INT NOT NULL,
+        PaqueteId     INT NULL,
+        FechaEvento   DATE NOT NULL,
+        Estado        NVARCHAR(20) NOT NULL DEFAULT 'pendiente',
+        FechaCreacion DATETIME2 NOT NULL DEFAULT GETDATE(),
+        CONSTRAINT FK_Reservaciones_Salones FOREIGN KEY (SalonId) REFERENCES Salones(Id),
+        CONSTRAINT FK_Reservaciones_Usuarios FOREIGN KEY (ClienteId) REFERENCES Usuarios(Id),
+        CONSTRAINT FK_Reservaciones_Paquetes FOREIGN KEY (PaqueteId) REFERENCES Paquetes(Id),
+        CONSTRAINT CK_Reservaciones_Estado CHECK (Estado IN ('pendiente', 'confirmada', 'cancelada'))
+    );
+END
+GO
