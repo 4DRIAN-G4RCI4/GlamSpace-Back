@@ -152,20 +152,56 @@ positivo. El número bajo se explica por decisiones que ya se habían tomado en 
 
 ## 6. Análisis final
 
-Análisis después de las correcciones.
+Análisis de todo el código después de las correcciones.
 
-- Fecha:
-- Commit analizado:
-- Quality Gate:
+- **Fecha:** 22/10/2026, 23:38 UTC
+- **Rama:** `Sprint4_Adrian`
+- **Commit analizado:** `2d2aefe`
+- **Quality Gate:** ❌ **No aprobado**, por la condición de **cobertura de pruebas** (ver abajo). Todas las demás condiciones están en OK.
+- **Hallazgos:** los 2 hallazgos del análisis inicial aparecen como **FIXED / CLOSED** en SonarQube Cloud (`/api/issues/search?resolved=true`). Quedan **0 hallazgos abiertos**.
 
-| Métrica | Inicial | Final |
-|---|---|---|
-| Bugs | | |
-| Vulnerabilidades | | |
-| Security hotspots | | |
-| Code smells | | |
-| Duplicación | | |
-| Deuda técnica | | |
+### Comparativa antes / después
+
+| Métrica | Clave Sonar | Inicial (`0feb322`) | Final (`2d2aefe`) | Diferencia |
+|---|---|---|---|---|
+| Bugs | `bugs` | 0 | 0 | = |
+| Vulnerabilidades | `vulnerabilities` | 1 | **0** | **−1** |
+| Code smells | `code_smells` | 1 | **0** | **−1** |
+| Security hotspots | `security_hotspots` | 0 | 0 | = |
+| Duplicación | `duplicated_lines_density` | 0.0 % | 0.0 % | = |
+| Deuda técnica | `sqale_index` | 5 min | **0 min** | **−5 min** |
+| Calificación de confiabilidad | `reliability_rating` | A | A | = |
+| Calificación de seguridad | `security_rating` | **C** | **A** | **C → A** |
+| Calificación de mantenibilidad | `sqale_rating` | A | A | = |
+| Líneas de código | `ncloc` | 1,197 | 1,273 | +76 |
+| Quality Gate | — | ✅ Aprobado | ❌ No aprobado (cobertura) | — |
+
+El aumento de líneas (+76) viene de 75 líneas del script de pruebas de la HU-11 (`Database/05_PruebasHU11.sql`, que Sonar cuenta como T-SQL) y 1 línea neta de `Program.cs` por el cambio de CORS.
+
+### Condiciones del Quality Gate (Sonar way, sobre el código nuevo)
+
+| Condición | Umbral | Resultado | Estado |
+|---|---|---|---|
+| Calificación de confiabilidad | A | A | ✅ |
+| Calificación de seguridad | A | A | ✅ |
+| Calificación de mantenibilidad | A | A | ✅ |
+| Duplicación | ≤ 3 % | 0.0 % | ✅ |
+| Security hotspots revisados | 100 % | 100 % | ✅ |
+| **Cobertura de pruebas** | **≥ 80 %** | **0.0 %** | ❌ |
+
+**¿Por qué el Quality Gate pasó de aprobado a no aprobado si se corrigieron todos los hallazgos?**
+El Quality Gate solo evalúa el **código nuevo** desde la línea base del 22/10/2026 16:54. En el
+análisis inicial, el código nuevo eran solo el workflow y la documentación, que no cuentan para
+cobertura. Al corregir los hallazgos se modificaron líneas de C# en `Program.cs`, y esas líneas
+nuevas exigen **80 % de cobertura de pruebas**. El proyecto **todavía no tiene pruebas
+automatizadas** ni genera un reporte de cobertura, así que el resultado es 0 %.
+
+No es un hallazgo de código y no se ocultó: no se usaron exclusiones de cobertura ni se cambió el
+Quality Gate. La forma correcta de aprobarlo es **agregar pruebas automatizadas** (por ejemplo, un
+proyecto `GlamSpaces.Tests` con xUnit y `WebApplicationFactory`) y publicar su cobertura en el
+análisis (`dotnet test` con *coverlet* + `sonar.cs.opencover.reportsPaths`). Queda como siguiente paso.
+
+El análisis del Pull Request #23 muestra el mismo resultado: todas las condiciones en OK excepto la cobertura.
 
 <!-- CAPTURA: resumen del análisis final en sonarcloud.io (Overview) -->
 
