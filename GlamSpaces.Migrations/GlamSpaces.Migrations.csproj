@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FluentMigrator" Version="8.0.1" />
+    <PackageReference Include="FluentMigrator.Runner.SqlServer" Version="8.0.1" />
+  </ItemGroup>
+
+  <!-- La línea base (001) carga los scripts originales de Database/ incrustados en el
+       ensamblado: no hay copias a mano y siempre usan la versión vigente del repo. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\Database\01_Tablas.sql" LogicalName="Database.01_Tablas.sql" />
+    <EmbeddedResource Include="..\Database\02_StoredProcedures.sql" LogicalName="Database.02_StoredProcedures.sql" />
+    <EmbeddedResource Include="..\Database\03_Indices.sql" LogicalName="Database.03_Indices.sql" />
+  </ItemGroup>
+
+</Project>

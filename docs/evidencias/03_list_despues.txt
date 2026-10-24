@@ -1,0 +1,14 @@
+# Evidencia 03 — Migraciones después de aplicar (todas aplicadas)
+# Fecha: 2026-10-23 22:05:23 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 listar   (dotnet tool run dotnet-fm -- list migrations)
+#
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+⌘ 202610230930: M004_IndiceUnicoBusquedasFavoritas (current)
+Task completed.
+# Código de salida: 0

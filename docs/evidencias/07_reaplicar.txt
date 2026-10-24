@@ -1,0 +1,38 @@
+# Evidencia 07 — Reaplicar la migración revertida (004) y verificar que el índice volvió
+# Fecha: 2026-10-23 22:09:58 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 reaplicar   (migrate up + list migrations)
+#
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610230930: M004_IndiceUnicoBusquedasFavoritas migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+CreateIndex BusquedasFavoritas (UsuarioId, SalonId)
+Committing Transaction
+202610230930: M004_IndiceUnicoBusquedasFavoritas migrated
+Task completed.
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+⌘ 202610230930: M004_IndiceUnicoBusquedasFavoritas (current)
+Task completed.
+
+# Verificación: el índice único volvió
+# Comando: .\scripts\migraciones.ps1 consultar -Sql "SELECT i.name AS indice, i.is_unique AS es_unico, STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) AS columnas FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id WHERE i.object_id = OBJECT_ID('dbo.BusquedasFavoritas') GROUP BY i.name, i.is_unique; SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THEN 'EXISTE' ELSE 'NO EXISTE' END AS UX_BusquedasFavoritas_Usuario_Salon"
+
+indice                              es_unico columnas          
+------                              -------- --------          
+PK_BusquedasFavoritas                   True Id                
+UX_BusquedasFavoritas_Usuario_Salon     True UsuarioId, SalonId
+(2 filas)
+
+UX_BusquedasFavoritas_Usuario_Salon
+-----------------------------------
+EXISTE
+(1 filas)
+# Código de salida: 0

@@ -1,0 +1,116 @@
+# Migraciones de la base de datos con FluentMigrator.
+# Levanta un SQL Server 2022 desechable, corre todas las migraciones desde una BD vacía,
+# revierte la última (rollback by 1) y la vuelve a aplicar. Nunca toca Azure.
+#
+# Requiere el secret MSSQL_SA_PASSWORD (Settings > Secrets and variables > Actions):
+# una contraseña fuerte cualquiera (8+ caracteres con mayúsculas, minúsculas, números y símbolo).
+# Solo vive dentro del contenedor de pruebas de cada ejecución.
+
+name: Migraciones BD
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+      - Sprint4_Adrian
+  pull_request:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  migraciones:
+    name: Migraciones desde cero, rollback y reaplicación
+    runs-on: ubuntu-latest
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: ${{ secrets.MSSQL_SA_PASSWORD }}
+        ports:
+          - 1433:1433
+
+    env:
+      SA_PASSWORD: ${{ secrets.MSSQL_SA_PASSWORD }}
+      # La contraseña llega desde el secret; GitHub la oculta en los logs.
+      CONN: Server=localhost,1433;Database=GlamSpacesMigraciones;User Id=sa;Password=${{ secrets.MSSQL_SA_PASSWORD }};TrustServerCertificate=True
+      DLL: GlamSpaces.Migrations/bin/Release/net9.0/GlamSpaces.Migrations.dll
+      PROCESADOR: SqlServer2016
+
+    steps:
+      - name: Verificar el secret de la contraseña
+        run: |
+          if [ -z "$SA_PASSWORD" ]; then
+            echo "::error::Falta el secret MSSQL_SA_PASSWORD (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Instalar .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.x'
+
+      - name: Restaurar la herramienta dotnet-fm (.config/dotnet-tools.json)
+        run: dotnet tool restore
+
+      - name: Compilar las migraciones
+        run: dotnet build GlamSpaces.Migrations -c Release
+
+      # SQL Server tarda unos segundos en arrancar dentro del contenedor.
+      - name: Esperar a que SQL Server acepte conexiones
+        run: |
+          for intento in $(seq 1 30); do
+            if docker exec ${{ job.services.sqlserver.id }} \
+                 /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -Q "SELECT 1" > /dev/null 2>&1; then
+              echo "SQL Server listo (intento $intento)."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::SQL Server no respondió a tiempo."
+          exit 1
+
+      - name: Crear la base de datos vacía
+        run: >
+          docker exec ${{ job.services.sqlserver.id }}
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b
+          -Q "CREATE DATABASE GlamSpacesMigraciones"
+
+      - name: Listar (antes, todo pendiente)
+        run: dotnet tool run dotnet-fm -- list migrations -p $PROCESADOR -c "$CONN" -a $DLL
+
+      - name: Aplicar todas las migraciones desde cero
+        run: dotnet tool run dotnet-fm -- migrate -p $PROCESADOR -c "$CONN" -a $DLL up
+
+      - name: Listar (después, todo aplicado)
+        run: dotnet tool run dotnet-fm -- list migrations -p $PROCESADOR -c "$CONN" -a $DLL
+
+      - name: Rollback de la última migración
+        run: dotnet tool run dotnet-fm -- rollback -p $PROCESADOR -c "$CONN" -a $DLL by 1
+
+      - name: Verificar que el índice único ya no existe
+        run: >
+          docker exec ${{ job.services.sqlserver.id }}
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
+          -Q "IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'El rollback no quitó el índice.', 1; PRINT 'OK: el índice se quitó con el rollback.';"
+
+      - name: Listar (tras el rollback, la 004 queda pendiente)
+        run: dotnet tool run dotnet-fm -- list migrations -p $PROCESADOR -c "$CONN" -a $DLL
+
+      - name: Reaplicar
+        run: dotnet tool run dotnet-fm -- migrate -p $PROCESADOR -c "$CONN" -a $DLL up
+
+      - name: Verificar que el índice volvió y ver el historial (VersionInfo)
+        run: >
+          docker exec ${{ job.services.sqlserver.id }}
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
+          -Q "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'La reaplicación no creó el índice.', 1; PRINT 'OK: el índice volvió.'; SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version;"
