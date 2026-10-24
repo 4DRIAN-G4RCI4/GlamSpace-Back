@@ -44,6 +44,23 @@ Plataforma para encontrar y reservar salones de eventos.
 
 Tu IP debe estar permitida en el firewall de Azure SQL (Portal → servidor SQL → Redes).
 
+## Versionamiento de la BD
+
+El esquema se versiona con **FluentMigrator** (proyecto `GlamSpaces.Migrations`, migraciones en
+`GlamSpaces.Migrations/Migraciones/`). Por seguridad, `scripts/migraciones.ps1` solo trabaja con
+LocalDB (BD `GlamSpacesMigraciones`) o con la BD de pruebas de `GLAMSPACES_CONN`, y se niega a correr contra Azure.
+
+```powershell
+dotnet tool restore                      # una vez: instala dotnet-fm desde .config/dotnet-tools.json
+.\scripts\migraciones.ps1 listar         # aplicadas y pendientes
+.\scripts\migraciones.ps1 subir          # aplica las pendientes
+.\scripts\migraciones.ps1 respaldar      # BACKUP a respaldos/*.bak (antes de un rollback)
+.\scripts\migraciones.ps1 rollback       # revierte la última migración
+.\scripts\migraciones.ps1 reset          # BD local nueva + todas las migraciones desde cero
+```
+
+Detalle completo, comparativa de herramientas y evidencias: [docs/VERSIONAMIENTO_BD.md](docs/VERSIONAMIENTO_BD.md).
+
 ---
 
 ## Sprint 1 — Registro e inicio de sesión

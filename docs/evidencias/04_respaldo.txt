@@ -1,0 +1,12 @@
+# Evidencia 04 — Respaldo (BACKUP DATABASE) de la BD de pruebas antes del rollback
+# Fecha: 2026-10-23 22:07:40 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 respaldar
+#
+Respaldando [GlamSpacesMigraciones] en C:\Trabajos ADRIAN\trabajos escolares\TrabajoAplicacionesWeb\Backend\GlamSpace-Back\respaldos\GlamSpacesMigraciones_20261023_220741.bak
+Processed 448 pages for database 'GlamSpacesMigraciones', file 'GlamSpacesMigraciones' on file 1.
+Processed 1 pages for database 'GlamSpacesMigraciones', file 'GlamSpacesMigraciones_log' on file 1.
+BACKUP DATABASE successfully processed 449 pages in 0.244 seconds (14.350 MB/sec).
+The backup set on file 1 is valid.
+Archivo: C:\Trabajos ADRIAN\trabajos escolares\TrabajoAplicacionesWeb\Backend\GlamSpace-Back\respaldos\GlamSpacesMigraciones_20261023_220741.bak (3,673 KB)
+# Código de salida: 0
