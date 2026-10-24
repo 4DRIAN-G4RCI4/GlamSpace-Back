@@ -1,0 +1,38 @@
+# Evidencia 01 — Migraciones antes de aplicar (BD vacía: todas pendientes)
+# Fecha: 2026-10-23 22:04:00 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 listar   (dotnet tool run dotnet-fm -- list migrations)
+#
+-------------------------------------------------------------------------------
+VersionMigration migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+CreateTable VersionInfo
+Committing Transaction
+VersionMigration migrated
+-------------------------------------------------------------------------------
+VersionUniqueMigration migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+CreateIndex VersionInfo (Version)
+AlterTable VersionInfo
+CreateColumn VersionInfo AppliedOn DateTime
+Committing Transaction
+VersionUniqueMigration migrated
+-------------------------------------------------------------------------------
+VersionDescriptionMigration migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+AlterTable VersionInfo
+CreateColumn VersionInfo Description String
+Committing Transaction
+VersionDescriptionMigration migrated
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase (not applied)
+202610230910: M002_CrearTablaBusquedasFavoritas (not applied)
+202610230920: M003_AgregarColumnaTelefonoSalones (not applied)
+202610230930: M004_IndiceUnicoBusquedasFavoritas (not applied)
+Task completed.
+# Código de salida: 0

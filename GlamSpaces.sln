@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GlamSpaces.Infrastructure",
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GlamSpaces.Api", "GlamSpaces.Api\GlamSpaces.Api.csproj", "{3A8B1994-31E6-45B5-946C-47273D7BAA72}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GlamSpaces.Migrations", "GlamSpaces.Migrations\GlamSpaces.Migrations.csproj", "{BC9CCFCB-17E5-494A-82B0-FD74898387C7}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -55,6 +57,18 @@ Global
 		{3A8B1994-31E6-45B5-946C-47273D7BAA72}.Release|x64.Build.0 = Release|Any CPU
 		{3A8B1994-31E6-45B5-946C-47273D7BAA72}.Release|x86.ActiveCfg = Release|Any CPU
 		{3A8B1994-31E6-45B5-946C-47273D7BAA72}.Release|x86.Build.0 = Release|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Debug|x64.Build.0 = Debug|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Debug|x86.Build.0 = Debug|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Release|x64.ActiveCfg = Release|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Release|x64.Build.0 = Release|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Release|x86.ActiveCfg = Release|Any CPU
+		{BC9CCFCB-17E5-494A-82B0-FD74898387C7}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

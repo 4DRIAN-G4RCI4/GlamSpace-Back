@@ -1,0 +1,14 @@
+# Evidencia 09 — Historial de migraciones aplicadas (tabla VersionInfo de FluentMigrator)
+# Fecha: 2026-10-23 22:11:09 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 consultar -Sql "SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version"
+#
+
+     Version AppliedOn                 Description                                               
+     ------- ---------                 -----------                                               
+202610230900 24/10/2026 04:10:58 a. m. Línea base: tablas, stored procedures e índices existentes
+202610230910 24/10/2026 04:10:58 a. m. Crea la tabla BusquedasFavoritas                          
+202610230920 24/10/2026 04:10:58 a. m. Agrega la columna Telefono a Salones                      
+202610230930 24/10/2026 04:10:58 a. m. Índice único (UsuarioId, SalonId) en BusquedasFavoritas
+(4 filas)
+# Código de salida: 0
