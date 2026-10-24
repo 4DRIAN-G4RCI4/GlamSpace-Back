@@ -61,6 +61,19 @@ dotnet tool restore                      # una vez: instala dotnet-fm desde .con
 
 Detalle completo, comparativa de herramientas y evidencias: [docs/VERSIONAMIENTO_BD.md](docs/VERSIONAMIENTO_BD.md).
 
+## Pruebas
+
+Proyecto `GlamSpaces.Tests` (xUnit + NSubstitute). Las pruebas **no usan base de datos**: los
+repositorios se reemplazan por dobles y la API se levanta en memoria.
+
+```bash
+dotnet test GlamSpaces.sln                                     # correr las pruebas
+dotnet test GlamSpaces.sln --collect:"XPlat Code Coverage;Format=opencover" --results-directory TestResults   # con cobertura
+```
+
+El workflow de Sonar corre las mismas pruebas y sube la cobertura. Detalle: sección
+"Pruebas unitarias y cobertura" de [docs/CALIDAD_SONAR.md](docs/CALIDAD_SONAR.md).
+
 ---
 
 ## Sprint 1 — Registro e inicio de sesión
