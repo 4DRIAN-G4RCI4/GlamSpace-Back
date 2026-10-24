@@ -77,3 +77,7 @@ app.MapHealthChecks("/health");
 
 // Versión asíncrona: no bloquea el hilo principal mientras la API está en ejecución.
 await app.RunAsync();
+
+// Hace pública la clase Program generada por las top-level statements para que
+// GlamSpaces.Tests pueda levantar la API en memoria con WebApplicationFactory<Program>.
+public partial class Program;
