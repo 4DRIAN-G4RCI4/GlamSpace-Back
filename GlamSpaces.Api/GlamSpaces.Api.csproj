@@ -16,4 +16,9 @@
     <ProjectReference Include="..\GlamSpaces.Infrastructure\GlamSpaces.Infrastructure.csproj" />
   </ItemGroup>
 
+  <!-- Permite que GlamSpaces.Tests pruebe las clases internal de este proyecto. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="GlamSpaces.Tests" />
+  </ItemGroup>
+
 </Project>

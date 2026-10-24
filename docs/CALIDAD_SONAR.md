@@ -441,7 +441,99 @@ El análisis del Pull Request #23 muestra el mismo patrón: todas las condicione
 
 ---
 
-## 10. Frontend (`GlamSpace-Front`)
+## 10. Pruebas unitarias y cobertura
+
+Rama `Sprint4_Pruebas`. Proyecto **`GlamSpaces.Tests`** (xUnit 2.9.2, NSubstitute 6.2.0,
+`Microsoft.AspNetCore.Mvc.Testing` 9.0.9 y coverlet.collector 6.0.2), agregado a `GlamSpaces.sln`.
+
+**Ninguna prueba toca una base de datos ni Azure.** Los repositorios se reemplazan por dobles
+(NSubstitute) de las interfaces del Domain, y la API se levanta en memoria (`TestServer`) con la
+cadena de conexión vacía.
+
+### Qué se prueba (77 pruebas)
+
+| Área | Archivo de pruebas | Qué verifica |
+|---|---|---|
+| Domain | `Domain/RespuestaApiPruebas.cs` | `RespuestaApi.Ok` / `Error`, que el código 0 sea éxito y los demás no, el catálogo completo de `CodigosError` y `RespuestaPaginada`. |
+| Domain | `Domain/DtosPruebas.cs` | Mapeos `Desde(...)` de usuario, salón y paquete (el usuario nunca expone `PasswordHash`); valores por defecto (salón `no_publicado`, reservación `pendiente`, paginado 1/10); **contrato JSON** en camelCase que consume el frontend (`precioDesde`, `fotoPrincipal`, `totalPaquetes`) y lectura de los requests. |
+| Infrastructure | `Infrastructure/PasswordHasherPruebas.cs` | El hash no contiene la contraseña, sal distinta en cada hash, verificación correcta e incorrecta, y hashes con formato inválido. |
+| Infrastructure | `Infrastructure/StoredProcedurePruebas.cs` | El helper agrega `@Codigo`/`@Mensaje`, los lee, y arma la `RespuestaApi` de éxito (mapeando) o de error (sin mapear), con `DynamicParameters` en memoria. |
+| Infrastructure | `Infrastructure/UsuarioRepositorioPruebas.cs` | Una contraseña de menos de 8 caracteres se rechaza con `1001` **sin llamar a la BD** (el doble de `IDbConnection` no recibe ninguna llamada). |
+| Api | `Api/ApiControllerBasePruebas.cs` | Cada uno de los 13 códigos del catálogo se traduce a su status HTTP. |
+| Api | `Api/ControllersPruebas.cs` | Los 3 controllers (Usuarios, Salones, Paquetes) con dobles: casos de éxito y de error del repositorio (409, 401, 404, 400, 403), paginado, búsqueda vacía y disponibilidad. |
+| Api | `Api/ProgramPruebas.cs` | `Program.cs` de punta a punta con `WebApplicationFactory`: respuesta estándar, JSON inválido → `1001` (sin llegar al repositorio), excepción → `5000` (sin filtrar el detalle), **CORS** (el frontend recibe permiso y un origen desconocido no, la corrección de S5122), `/health` sin BD → `Unhealthy` y Swagger. |
+| Migrations | `Migrations/MigracionesPruebas.cs` | Versión y descripción de las 4 migraciones; el SQL que generaría cada `Up()`/`Down()` para SQL Server 2016 **sin ejecutarlo** (la 001 crea `Usuarios` como EF y carga los 12 SP; 002 crea la tabla con FK y `DEFAULT GETDATE()`; 003 agrega `NVARCHAR(20)` nulo; 004 crea el índice único; los `Down()` lo revierten y el de la 001 está vacío). |
+| Migrations | `Migrations/ScriptsSqlPruebas.cs` | La división de los scripts de `Database/` en lotes por `GO` y el error claro si falta un script. |
+
+Patrón **Arreglar / Actuar / Afirmar** y nombres en español.
+
+### Cómo correrlas
+
+```bash
+dotnet test GlamSpaces.sln
+
+# con cobertura (formato OpenCover, el mismo que lee Sonar)
+dotnet test GlamSpaces.sln --collect:"XPlat Code Coverage;Format=opencover" --results-directory TestResults
+```
+
+En el workflow `sonar.yml` el paso **Pruebas unitarias con cobertura** corre entre el build y el
+`sonarscanner end`, y el `begin` recibe
+`/d:sonar.cs.opencover.reportsPaths="TestResults/**/coverage.opencover.xml"`.
+
+`GlamSpaces.Tests` se declara como código de prueba con `<SonarQubeTestProject>true</SonarQubeTestProject>`
+en su `.csproj`. **No se usó `sonar.test.inclusions`**: la documentación de SonarQube Cloud indica que el
+SonarScanner for .NET clasifica los proyectos de prueba por sí mismo e ignora `sonar.tests` /
+`sonar.test.inclusions` (deja una advertencia). Las exclusiones siguen siendo solo `bin/` y `obj/`.
+
+Para que las pruebas lleguen a las clases `internal` sin hacerlas públicas, `Api`, `Infrastructure` y
+`Migrations` declaran `<InternalsVisibleTo Include="GlamSpaces.Tests" />`. `Program.cs` agrega
+`public partial class Program;` (sin líneas ejecutables), como pide `WebApplicationFactory<Program>`.
+
+### Cobertura antes y después (local, 23/10/2026)
+
+Antes: **0 %** (no existía ningún proyecto de pruebas).
+
+Después (`dotnet test` con coverlet, reporte OpenCover, 77 pruebas correctas):
+
+| Proyecto | Líneas | Ramas |
+|---|---|---|
+| GlamSpaces.Api | 94.2 % (81/86) | 95.2 % (20/21) |
+| GlamSpaces.Domain | 100.0 % (141/141) | — |
+| GlamSpaces.Infrastructure | 22.9 % (46/201) | 26.9 % (7/26) |
+| GlamSpaces.Migrations | 100.0 % (69/69) | 100.0 % (4/4) |
+| **Total** | **67.8 % (337/497)** | **60.8 % (31/51)** |
+| **Código que se puede probar sin BD** | **100 % (337/337)** | |
+
+### Qué NO se cubre y por qué
+
+Las 160 líneas sin cubrir **necesitan una base de datos real**:
+
+| Archivo | Líneas | Por qué |
+|---|---|---|
+| `Infrastructure/Repositorios/SalonRepositorio.cs` | 81 | Ejecuta stored procedures con Dapper. |
+| `Infrastructure/Repositorios/PaqueteRepositorio.cs` | 37 | Ídem. |
+| `Infrastructure/Repositorios/UsuarioRepositorio.cs` | 26 de 35 | Ídem (la validación previa de la contraseña sí se cubre). |
+| `Infrastructure/Datos/StoredProcedure.cs` → `Paginado` | 11 de 22 | Lee varios resultados con `QueryMultipleAsync` (el resto del helper sí se cubre). |
+| `Api/Program.cs` | 5 de 51 | Abren una conexión real (`new SqlConnection(...).Open()` por petición) y el `Healthy` del healthcheck. |
+
+No se simularon con trucos (por ejemplo, falsificar `IDbConnection` para que Dapper "lea" filas): esas
+pruebas solo verificarían el doble, no los stored procedures. La forma correcta es una **suite de
+integración** contra el SQL Server en contenedor que ya levanta el workflow de migraciones; queda como
+propuesta.
+
+**¿Por qué el total de 67.8 % es suficiente para el Quality Gate?** La condición de cobertura de *Sonar
+way* aplica al **código nuevo** (lo cambiado desde la línea base del 22/10/2026), no a todo el proyecto.
+El código nuevo es `Program.cs` (CORS y `RunAsync`) y el proyecto `GlamSpaces.Migrations`; ambos están
+cubiertos en local. Los repositorios no cambiaron en ese periodo.
+
+### Exclusiones de cobertura
+
+**Ninguna.** No se excluyó ningún archivo de la cobertura (ni `Program.cs` ni las migraciones); todas las
+líneas cuentan en el porcentaje.
+
+---
+
+## 11. Frontend (`GlamSpace-Front`)
 
 El frontend se analizó en su **propio proyecto** de SonarQube Cloud, dentro de la misma organización `4drian-g4rci4`. Lenguaje analizado: **JavaScript** (React Native / Expo).
 
@@ -476,7 +568,7 @@ Las dos líneas señaladas existen tal cual en el archivo actual, lo que confirm
 
 ---
 
-## 11. Cumplimiento de la rúbrica (Parte 1, 40 pts)
+## 12. Cumplimiento de la rúbrica (Parte 1, 40 pts)
 
 | # | Punto de la actividad | Estado | Evidencia |
 |---|---|---|---|
@@ -493,7 +585,7 @@ Commits de referencia (repositorio `4DRIAN-G4RCI4/GlamSpace-Back`): `28a42a5`, `
 
 ---
 
-## 12. Pendientes y riesgos
+## 13. Pendientes y riesgos
 
 | # | Pendiente | Por qué importa | Prioridad |
 |---|---|---|---|
@@ -507,7 +599,7 @@ Commits de referencia (repositorio `4DRIAN-G4RCI4/GlamSpace-Back`): `28a42a5`, `
 
 ---
 
-## 13. Capturas de evidencia
+## 14. Capturas de evidencia
 
 > Insertar aquí las imágenes antes de entregar o presentar.
 
@@ -525,7 +617,7 @@ Commits de referencia (repositorio `4DRIAN-G4RCI4/GlamSpace-Back`): `28a42a5`, `
 
 ---
 
-## 14. Anexo: línea de tiempo
+## 15. Anexo: línea de tiempo
 
 Fechas y autores tomados de `git log` (hora local, UTC−06:00).
 
