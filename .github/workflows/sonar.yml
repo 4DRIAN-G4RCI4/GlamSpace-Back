@@ -51,8 +51,11 @@ jobs:
           dotnet tool install --global dotnet-sonarscanner
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
-      # begin → build → end: el scanner observa la compilación y al final sube los resultados.
+      # begin → build → test → end: el scanner observa la compilación, las pruebas generan la
+      # cobertura (OpenCover, con coverlet) y al final se sube todo.
       # Solo se excluyen bin/ y obj/ (artefactos de compilación); ningún hallazgo del código se oculta.
+      # GlamSpaces.Tests se clasifica como código de prueba con <SonarQubeTestProject> en su .csproj
+      # (SonarScanner for .NET no admite sonar.test.inclusions).
       - name: Iniciar análisis
         run: >
           dotnet sonarscanner begin
@@ -61,9 +64,17 @@ jobs:
           /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
           /d:sonar.host.url="https://sonarcloud.io"
           /d:sonar.exclusions="**/bin/**,**/obj/**"
+          /d:sonar.cs.opencover.reportsPaths="TestResults/**/coverage.opencover.xml"
 
       - name: Compilar
         run: dotnet build GlamSpaces.sln
+
+      # Pruebas unitarias sin base de datos (los repositorios se sustituyen por dobles).
+      - name: Pruebas unitarias con cobertura
+        run: >
+          dotnet test GlamSpaces.sln --no-build
+          --collect:"XPlat Code Coverage;Format=opencover"
+          --results-directory TestResults
 
       - name: Terminar análisis y subir resultados
         run: dotnet sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
