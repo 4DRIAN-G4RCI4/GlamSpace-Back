@@ -1,0 +1,70 @@
+# Evidencia 15 — HU-14: reaplicar la 005 tras el rollback
+# Fecha: 2026-10-29 13:28:23 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 reaplicar
+#
+>>> .\scripts\migraciones.ps1 reaplicar   (subir + listar)
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610291000: M005_CrearSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Solicitudes (
+        Id              INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Solicitudes PRIMARY KEY,
+        SalonId         INT           NOT NULL CONSTRAINT FK_Solicitudes_Salones  REFERENCES dbo.Salones(Id),
+        ClienteId       INT           NOT NULL CONSTRAINT FK_Solicitudes_Usuarios REFERENCES dbo.Usuarios(Id),
+        PaqueteId       INT           NULL     CONSTRAINT FK_Solicitudes_Paquetes REFERENCES dbo.Paquetes(Id),
+        FechaEvento     DATE          NOT NULL,
+        TipoEvento      NVARCHAR(100) NOT NULL,
+        NumeroInvitados INT           NOT NULL,
+        Comentarios     NVARCHAR(500) NULL,
+        Estado          NVARCHAR(20)  NOT NULL CONSTRAINT DF_Solicitudes_Estado DEFAULT 'pendiente',
+        FechaCreacion   DATETIME2(7)  NOT NULL CONSTRAINT DF_Solicitudes_FechaCreacion DEFAULT SYSUTCDATETIME()
+    );
+END
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Invitados')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Invitados CHECK (NumeroInvitados > 0);
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Estado')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Estado CHECK (Estado IN ('pendiente', 'confirmada', 'rechazada'));
+ExecuteSqlStatement 
+SET QUOTED_IDENTIFIER ON;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente'
+               AND object_id = OBJECT_ID(N'dbo.Solicitudes'))
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Solicitudes_Cliente_Salon_Fecha_Pendiente
+        ON dbo.Solicitudes (ClienteId, SalonId, FechaEvento)
+        WHERE Estado = 'pendiente';
+Committing Transaction
+202610291000: M005_CrearSolicitudes migrated
+Task completed.
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+⌘ 202610291000: M005_CrearSolicitudes (current)
+Task completed.
+
+>>> Verificación: .\scripts\migraciones.ps1 consultar -Sql "<¿existe Solicitudes?, CHECK, índice, VersionInfo>"
+
+TablaSolicitudes ChecksSolicitudes IndicePendientes TablasAnteriores
+---------------- ----------------- ---------------- ----------------
+existe                           2                1                5
+(1 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+(5 filas)
+# Código de salida: 0

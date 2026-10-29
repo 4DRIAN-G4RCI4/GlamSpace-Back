@@ -1,0 +1,60 @@
+# Evidencia 12 — HU-14: verificar la estructura de Solicitudes (columnas, llaves, CHECK, índice) y VersionInfo
+# Fecha: 2026-10-29 13:27:33 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 consultar -Sql "<consultas a sys.columns, sys.foreign_keys, sys.check_constraints, sys.indexes y VersionInfo>"
+#
+
+ N Columna         Tipo          Nulos    Identidad PorDefecto        
+ - -------         ----          -----    --------- ----------        
+ 1 Id              int           NOT NULL      True                   
+ 2 SalonId         int           NOT NULL     False                   
+ 3 ClienteId       int           NOT NULL     False                   
+ 4 PaqueteId       int           NULL         False                   
+ 5 FechaEvento     date          NOT NULL     False                   
+ 6 TipoEvento      nvarchar(100) NOT NULL     False                   
+ 7 NumeroInvitados int           NOT NULL     False                   
+ 8 Comentarios     nvarchar(500) NULL         False                   
+ 9 Estado          nvarchar(20)  NOT NULL     False ('pendiente')     
+10 FechaCreacion   datetime2(7)  NOT NULL     False (sysutcdatetime())
+(10 filas)
+
+Restriccion                  Tipo                  
+-----------                  ----                  
+CK_Solicitudes_Estado        CHECK_CONSTRAINT      
+CK_Solicitudes_Invitados     CHECK_CONSTRAINT      
+DF_Solicitudes_Estado        DEFAULT_CONSTRAINT    
+DF_Solicitudes_FechaCreacion DEFAULT_CONSTRAINT    
+FK_Solicitudes_Paquetes      FOREIGN_KEY_CONSTRAINT
+FK_Solicitudes_Salones       FOREIGN_KEY_CONSTRAINT
+FK_Solicitudes_Usuarios      FOREIGN_KEY_CONSTRAINT
+PK_Solicitudes               PRIMARY_KEY_CONSTRAINT
+(8 filas)
+
+LlaveForanea            Columna   Referencia
+------------            -------   ----------
+FK_Solicitudes_Paquetes PaqueteId Paquetes  
+FK_Solicitudes_Salones  SalonId   Salones   
+FK_Solicitudes_Usuarios ClienteId Usuarios
+(3 filas)
+
+CheckRestriccion         Definicion                                                             
+----------------         ----------                                                             
+CK_Solicitudes_Estado    ([Estado]='rechazada' OR [Estado]='confirmada' OR [Estado]='pendiente')
+CK_Solicitudes_Invitados ([NumeroInvitados]>(0))
+(2 filas)
+
+Indice                                       Unico Filtrado Filtro                 Columnas                       
+------                                       ----- -------- ------                 --------                       
+PK_Solicitudes                                True    False                        Id                             
+UX_Solicitudes_Cliente_Salon_Fecha_Pendiente  True     True ([Estado]='pendiente') ClienteId, SalonId, FechaEvento
+(2 filas)
+
+     Version AppliedOn                 Description                                                            
+     ------- ---------                 -----------                                                            
+202610230900 24/10/2026 04:10:58 a. m. Línea base: tablas, stored procedures e índices existentes             
+202610230910 24/10/2026 04:10:58 a. m. Crea la tabla BusquedasFavoritas                                       
+202610230920 24/10/2026 04:10:58 a. m. Agrega la columna Telefono a Salones                                   
+202610230930 24/10/2026 04:10:58 a. m. Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 29/10/2026 07:27:10 p. m. HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+(5 filas)
+# Código de salida: 0
