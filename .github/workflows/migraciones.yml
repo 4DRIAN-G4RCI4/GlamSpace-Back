@@ -111,13 +111,16 @@ jobs:
             /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesMigraciones \
             -Q "IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE Correo = 'cliente.prueba@glamspaces.com') INSERT INTO dbo.Usuarios (NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro) VALUES ('Cliente de Prueba', 'cliente.prueba@glamspaces.com', 'sin-login', 'cliente', NULL, SYSUTCDATETIME());"
 
-      # Se corre dos veces: la segunda demuestra que el script es idempotente (no duplica nada).
-      - name: Script 06_SolicitudesHU14.sql (dos veces) y verificación de la semilla
+      # Se corren dos veces: la segunda demuestra que son idempotentes (no duplican nada).
+      # 07 encuentra la columna que ya agregó la M006 y no hace nada (igual que pasaría en Azure).
+      - name: Scripts 06_SolicitudesHU14.sql y 07_TelefonoSolicitudesHU16.sql (dos veces) y verificación de la semilla
         run: |
           for vez in 1 2; do
-            docker exec ${{ job.services.sqlserver.id }} \
-              /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesMigraciones \
-              -i /tmp/Database/06_SolicitudesHU14.sql
+            for script in 06_SolicitudesHU14.sql 07_TelefonoSolicitudesHU16.sql; do
+              docker exec ${{ job.services.sqlserver.id }} \
+                /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesMigraciones \
+                -i /tmp/Database/$script
+            done
           done
           docker exec ${{ job.services.sqlserver.id }} \
             /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones \
@@ -126,20 +129,20 @@ jobs:
       - name: Rollback de la última migración
         run: dotnet tool run dotnet-fm -- rollback -p $PROCESADOR -c "$CONN" -a $DLL by 1
 
-      - name: Verificar que la tabla Solicitudes ya no existe
+      - name: Verificar que TelefonoContacto ya no existe y que las solicitudes siguen
         run: >
           docker exec ${{ job.services.sqlserver.id }}
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
-          -Q "IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NOT NULL THROW 50000, 'El rollback no quitó la tabla Solicitudes.', 1; PRINT 'OK: la tabla Solicitudes se quitó con el rollback.';"
+          -Q "IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NOT NULL THROW 50000, 'El rollback no quitó TelefonoContacto.', 1; IF (SELECT COUNT(*) FROM dbo.Solicitudes) <> 3 THROW 50000, 'El rollback de la 006 no debe borrar solicitudes.', 1; PRINT 'OK: TelefonoContacto se quitó y las 3 solicitudes siguen.';"
 
-      - name: Listar (tras el rollback, la 005 queda pendiente)
+      - name: Listar (tras el rollback, la 006 queda pendiente)
         run: dotnet tool run dotnet-fm -- list migrations -p $PROCESADOR -c "$CONN" -a $DLL
 
       - name: Reaplicar
         run: dotnet tool run dotnet-fm -- migrate -p $PROCESADOR -c "$CONN" -a $DLL up
 
-      - name: Verificar que Solicitudes volvió completa y ver el historial (VersionInfo)
+      - name: Verificar que TelefonoContacto volvió, Solicitudes completa y el historial (VersionInfo)
         run: >
           docker exec ${{ job.services.sqlserver.id }}
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
-          -Q "IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL THROW 50000, 'La reaplicación no creó Solicitudes.', 1; IF (SELECT COUNT(*) FROM sys.check_constraints WHERE name IN ('CK_Solicitudes_Invitados', 'CK_Solicitudes_Estado')) <> 2 THROW 50000, 'Faltan restricciones CHECK de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente' AND is_unique = 1 AND has_filter = 1) THROW 50000, 'Falta el índice único filtrado de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'Falta el índice de la 004.', 1; PRINT 'OK: Solicitudes con sus 2 CHECK y su índice único filtrado.'; SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version;"
+          -Q "IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL THROW 50000, 'La reaplicación no agregó TelefonoContacto.', 1; IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL THROW 50000, 'Falta la tabla Solicitudes.', 1; IF (SELECT COUNT(*) FROM sys.check_constraints WHERE name IN ('CK_Solicitudes_Invitados', 'CK_Solicitudes_Estado')) <> 2 THROW 50000, 'Faltan restricciones CHECK de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente' AND is_unique = 1 AND has_filter = 1) THROW 50000, 'Falta el índice único filtrado de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'Falta el índice de la 004.', 1; PRINT 'OK: TelefonoContacto volvió; Solicitudes con sus 2 CHECK y su índice único filtrado.'; SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version;"

@@ -1,6 +1,6 @@
 # Versionamiento de la base de datos — GlamSpace-Back
 
-**Actividad: Parte 2 · Sprint 4 (y HU-14 del Sprint 5) · Responsable: Adrian Adonai García Jiménez**
+**Actividad: Parte 2 · Sprint 4 (y HU-14 / HU-16 del Sprint 5) · Responsable: Adrian Adonai García Jiménez**
 
 Herramienta: **FluentMigrator 8.0.1** · Base de datos: SQL Server (LocalDB en desarrollo, contenedor
 SQL Server 2022 en GitHub Actions; producción es Azure SQL, que **no** se toca en esta práctica).
@@ -119,6 +119,7 @@ scripts/migraciones.ps1            listar, subir, rollback, reaplicar, respaldar
 | 003 | `202610230920` | `M003_AgregarColumnaTelefonoSalones` | **Adición de columna**. | `Alter.Table("Salones").AddColumn("Telefono").AsString(20).Nullable()` → `NVARCHAR(20) NULL`. | `Delete.Column("Telefono").FromTable("Salones")`. |
 | 004 | `202610230930` | `M004_IndiceUnicoBusquedasFavoritas` | **Índice / restricción**: un usuario no puede guardar el mismo salón dos veces. | `Create.Index("UX_BusquedasFavoritas_Usuario_Salon")` único sobre `(UsuarioId, SalonId)`. | `Delete.Index("UX_BusquedasFavoritas_Usuario_Salon")`. |
 | 005 | `202610291000` | `M005_CrearSolicitudes` | **HU-14 (Sprint 5)**: tabla `Solicitudes` de solicitudes de reservación. Ya existía en producción (se creó a mano), por eso es idempotente. Ver [sección 12](#12-sprint-5--hu-14-tabla-solicitudes). | 4 lotes `Execute.Sql`, cada uno con `IF OBJECT_ID … IS NULL` / `IF NOT EXISTS`: tabla con PK, 3 FK y 2 `DEFAULT`; `CK_Solicitudes_Invitados`; `CK_Solicitudes_Estado`; índice único filtrado `UX_Solicitudes_Cliente_Salon_Fecha_Pendiente`. | `Delete.Table("Solicitudes")` (se van con ella sus restricciones e índice). |
+| 006 | `202610291100` | `M006_AgregarTelefonoContactoSolicitudes` | **HU-16 (Sprint 5)**: teléfono de contacto del formulario de solicitud. Ya se agregó a mano en producción con `07_TelefonoSolicitudesHU16.sql`. Ver [sección 13](#13-sprint-5--hu-16-teléfono-de-contacto-en-solicitudes). | `IF COL_LENGTH(...) IS NULL ALTER TABLE dbo.Solicitudes ADD TelefonoContacto NVARCHAR(20) NULL`. | `Delete.Column("TelefonoContacto").FromTable("Solicitudes")`. |
 
 **Detalle técnico de la línea base:** FluentMigrator no acepta el separador `GO` dentro de un mismo
 `Execute.Sql`, y los scripts de `Database/` lo usan entre cada SP. `ScriptsSql.Lotes()` divide cada
@@ -1824,11 +1825,13 @@ corrida posterior, ya sin ese error.
 - **Workflow `Migraciones BD`:** se dispara en push a `develop`, `main` y `Sprint4_Adrian`, y en PR hacia
   `develop` y `main`. Levanta un contenedor `mcr.microsoft.com/mssql/server:2022-latest` (contraseña desde
   el secret `MSSQL_SA_PASSWORD`), crea una BD vacía y ejecuta: listar → `migrate up` → listar →
-  `04_DatosPrueba.sql` + un cliente de prueba → `06_SolicitudesHU14.sql` dos veces (verifica 3 solicitudes,
-  una por estado) → `rollback by 1` → verificación de que `Solicitudes` se quitó → listar → `migrate up` →
-  verificación de que `Solicitudes` volvió con sus 2 CHECK y su índice filtrado + `VersionInfo`.
-  Si una verificación falla, el job falla. (Hasta el Sprint 4 la última migración era la 004 y el
-  rollback verificaba su índice; desde la HU-14 la última es la 005.)
+  `04_DatosPrueba.sql` + un cliente de prueba → `06_SolicitudesHU14.sql` y `07_TelefonoSolicitudesHU16.sql`
+  dos veces (verifica 3 solicitudes, una por estado) → `rollback by 1` (revierte la última migración, hoy
+  la 006) → verificación de que `TelefonoContacto` se quitó y las solicitudes siguen → listar →
+  `migrate up` → verificación de que `TelefonoContacto` volvió y `Solicitudes` sigue con sus 2 CHECK y su
+  índice filtrado + `VersionInfo`. Si una verificación falla, el job falla. (La verificación del rollback
+  cambia con cada migración nueva: en el Sprint 4 revisaba el índice de la 004, en la HU-14 la tabla de
+  la 005 y desde la HU-16 la columna de la 006.)
 
 > 📸 **CAPTURA AQUÍ:** el workflow "Migraciones BD" en verde en la pestaña *Actions* de GitHub.
 
@@ -2435,7 +2438,243 @@ desapareció, la reaplica y comprueba que volvió completa.
 
 ---
 
-## 13. Capturas de pantalla
+## 13. Sprint 5 — HU-16: teléfono de contacto en Solicitudes
+
+**Rama:** `Sprint5_Adrian` (PR hacia `develop`) · **Migración:** `M006_AgregarTelefonoContactoSolicitudes`
+(`202610291100`) · **Script:** `Database/07_TelefonoSolicitudesHU16.sql`
+
+### Por qué
+
+La HU-16 (formulario de solicitud) pide **nombre y teléfono de contacto obligatorios**, pero ni
+`Solicitudes` ni `Usuarios` tenían teléfono. El nombre se toma de la sesión del cliente
+(`NombreCompleto`). Para el teléfono se agregó la columna `TelefonoContacto` a `Solicitudes`.
+
+| Decisión | Motivo |
+|---|---|
+| `NVARCHAR(20)` | Igual que `Salones.Telefono` (M003): admite lada, espacios o guiones. |
+| `NULL` en la BD | Ya había solicitudes en producción sin teléfono; una columna `NOT NULL` fallaría con ellas. |
+| Obligatorio en el API | El SP o endpoint de crear solicitud (HU-15, Alexis) debe rechazar un teléfono vacío (propuesta: código `1001`, datos inválidos). |
+
+### Cómo se aplicó
+
+1. `07_TelefonoSolicitudesHU16.sql` se ejecutó a mano en `glamspaces-db`, verificado con la
+   consulta del propio script: `TelefonoContacto | nvarchar | 20 | NULL`. Es idempotente: si la columna
+   ya existe solo imprime `La columna TelefonoContacto ya existe.`
+2. La M006 hace lo mismo con `IF COL_LENGTH(...) IS NULL`, así que en Azure no cambiará nada y solo
+   quedará registrada. Su `Down()` quita la columna.
+3. Pruebas unitarias (85 en total, todas en verde): la 006 entra en la prueba de versión,
+   `M006_Up_AgregaTelefonoContactoSoloSiNoExiste` y `M006_Down_QuitaLaColumna`, que revisa que el SQL
+   generado sea `ALTER TABLE [dbo].[Solicitudes] DROP COLUMN [TelefonoContacto]`.
+   `GlamSpaces.Migrations` sigue al 100 % de cobertura local (111/111 líneas).
+
+### Evidencias (LocalDB)
+
+#### Listar: la 006 pendiente — [`18_hu16_list_antes.txt`](evidencias/18_hu16_list_antes.txt)
+
+```text
+# Evidencia 18 — HU-16: listar (la 006 aparece pendiente)
+# Fecha: 2026-10-29 14:06:15 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 listar
+#
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+⌘ 202610291000: M005_CrearSolicitudes (current)
+202610291100: M006_AgregarTelefonoContactoSolicitudes (not applied)
+Task completed.
+# Código de salida: 0
+```
+
+#### Subir — [`19_hu16_migrate_up.txt`](evidencias/19_hu16_migrate_up.txt)
+
+```text
+# Evidencia 19 — HU-16: aplicar la 006 (TelefonoContacto)
+# Fecha: 2026-10-29 14:06:20 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 subir
+#
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL
+    ALTER TABLE dbo.Solicitudes ADD TelefonoContacto NVARCHAR(20) NULL;
+Committing Transaction
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrated
+Task completed.
+# Código de salida: 0
+```
+
+#### Verificar y correr el script 07 sobre la BD migrada — [`20_hu16_verificar.txt`](evidencias/20_hu16_verificar.txt)
+
+```text
+# Evidencia 20 — HU-16: verificar la columna y correr el script 07 sobre la BD migrada
+# Fecha: 2026-10-29 14:06:23 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> Estructura
+
+TelefonoContacto ColumnasSolicitudes
+---------------- -------------------
+existe                            11
+(1 filas)
+
+Columna          Tipo     Longitud Nulos
+-------          ----     -------- -----
+TelefonoContacto nvarchar       20 NULL
+(1 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+202610291100 HU-16: columna TelefonoContacto en Solicitudes
+(6 filas)
+
+>>> El script 07 (el que se corrió en Azure) sobre la BD ya migrada: no hace nada
+>>> .\scripts\migraciones.ps1 script -Archivo Database\07_TelefonoSolicitudesHU16.sql
+Ejecutando Database\07_TelefonoSolicitudesHU16.sql en [GlamSpacesMigraciones]
+La columna TelefonoContacto ya existe.
+
+Columna          Tipo     Longitud Nulos
+-------          ----     -------- -----
+TelefonoContacto nvarchar       20 NULL
+(1 filas)
+# Código de salida: 0
+```
+
+#### Rollback de la 006 — [`21_hu16_rollback.txt`](evidencias/21_hu16_rollback.txt)
+
+```text
+# Evidencia 21 — HU-16: rollback de la 006 y verificación
+# Fecha: 2026-10-29 14:06:24 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 rollback
+#
+>>> .\scripts\migraciones.ps1 rollback
+-------------------------------------------------------------------------------
+202610291100: M006_AgregarTelefonoContactoSolicitudes reverting
+-------------------------------------------------------------------------------
+Beginning Transaction
+DeleteColumn Solicitudes TelefonoContacto
+Committing Transaction
+202610291100: M006_AgregarTelefonoContactoSolicitudes reverted
+Task completed.
+
+>>> Verificación
+
+TelefonoContacto ColumnasSolicitudes
+---------------- -------------------
+NO existe                         10
+(1 filas)
+
+(0 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+(5 filas)
+
+>>> .\scripts\migraciones.ps1 listar
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+⌘ 202610291000: M005_CrearSolicitudes (current)
+202610291100: M006_AgregarTelefonoContactoSolicitudes (not applied)
+Task completed.
+# Código de salida: 0
+```
+
+#### Columna agregada a mano (como en Azure) y reaplicación — [`22_hu16_reaplicar_como_azure.txt`](evidencias/22_hu16_reaplicar_como_azure.txt)
+
+```text
+# Evidencia 22 — HU-16: columna agregada a mano (como Azure) y reaplicación de la 006
+# Fecha: 2026-10-29 14:06:30 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> Paso A: la columna se agrega a mano con el script 07, como se hizo en glamspaces-db
+Ejecutando Database\07_TelefonoSolicitudesHU16.sql en [GlamSpacesMigraciones]
+Columna TelefonoContacto agregada a Solicitudes.
+
+Columna          Tipo     Longitud Nulos
+-------          ----     -------- -----
+TelefonoContacto nvarchar       20 NULL
+(1 filas)
+
+>>> Paso B: .\scripts\migraciones.ps1 reaplicar — la 006 ve la columna, no la duplica y solo queda registrada
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL
+    ALTER TABLE dbo.Solicitudes ADD TelefonoContacto NVARCHAR(20) NULL;
+Committing Transaction
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrated
+Task completed.
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+202610291000: M005_CrearSolicitudes
+⌘ 202610291100: M006_AgregarTelefonoContactoSolicitudes (current)
+Task completed.
+
+>>> Verificación
+
+TelefonoContacto ColumnasSolicitudes
+---------------- -------------------
+existe                            11
+(1 filas)
+
+Columna          Tipo     Longitud Nulos
+-------          ----     -------- -----
+TelefonoContacto nvarchar       20 NULL
+(1 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+202610291100 HU-16: columna TelefonoContacto en Solicitudes
+(6 filas)
+# Código de salida: 0
+```
+
+> 📸 **CAPTURA AQUÍ:** la consulta del script 07 en `glamspaces-db` con `TelefonoContacto | nvarchar | 20 | NULL`.
+
+---
+
+## 14. Capturas de pantalla
 
 Lugares marcados con **CAPTURA AQUÍ** en este documento:
 
@@ -2445,6 +2684,7 @@ Lugares marcados con **CAPTURA AQUÍ** en este documento:
 4. Sección 9: reset limpio y `SELECT` de `VersionInfo`.
 5. Sección 11: workflow "Migraciones BD" en verde en GitHub Actions.
 6. Sección 12 (HU-14): la tabla `Solicitudes` en SSMS y el reset con la 005 en `(current)`.
+7. Sección 13 (HU-16): el script 07 en `glamspaces-db` con la columna `TelefonoContacto`.
 
 Opcionales:
 

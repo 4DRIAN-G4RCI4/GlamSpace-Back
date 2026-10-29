@@ -1,0 +1,60 @@
+# Evidencia 22 — HU-16: columna agregada a mano (como Azure) y reaplicación de la 006
+# Fecha: 2026-10-29 14:06:30 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> Paso A: la columna se agrega a mano con el script 07, como se hizo en glamspaces-db
+Ejecutando Database\07_TelefonoSolicitudesHU16.sql en [GlamSpacesMigraciones]
+Columna TelefonoContacto agregada a Solicitudes.
+
+Columna          Tipo     Longitud Nulos
+-------          ----     -------- -----
+TelefonoContacto nvarchar       20 NULL
+(1 filas)
+
+>>> Paso B: .\scripts\migraciones.ps1 reaplicar — la 006 ve la columna, no la duplica y solo queda registrada
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL
+    ALTER TABLE dbo.Solicitudes ADD TelefonoContacto NVARCHAR(20) NULL;
+Committing Transaction
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrated
+Task completed.
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+202610291000: M005_CrearSolicitudes
+⌘ 202610291100: M006_AgregarTelefonoContactoSolicitudes (current)
+Task completed.
+
+>>> Verificación
+
+TelefonoContacto ColumnasSolicitudes
+---------------- -------------------
+existe                            11
+(1 filas)
+
+Columna          Tipo     Longitud Nulos
+-------          ----     -------- -----
+TelefonoContacto nvarchar       20 NULL
+(1 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+202610291100 HU-16: columna TelefonoContacto en Solicitudes
+(6 filas)
+# Código de salida: 0
