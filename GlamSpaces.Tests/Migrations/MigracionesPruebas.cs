@@ -26,6 +26,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M003_AgregarColumnaTelefonoSalones), 202610230920)]
     [InlineData(typeof(M004_IndiceUnicoBusquedasFavoritas), 202610230930)]
     [InlineData(typeof(M005_CrearSolicitudes), 202610291000)]
+    [InlineData(typeof(M006_AgregarTelefonoContactoSolicitudes), 202610291100)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -212,5 +213,28 @@ public class MigracionesPruebas
         // Afirmar
         Assert.Equal("Solicitudes", borrar.TableName);
         Assert.Equal("DROP TABLE [dbo].[Solicitudes]", Generador.Generate(borrar).Trim().TrimEnd(';'));
+    }
+
+    [Fact]
+    public void M006_Up_AgregaTelefonoContactoSoloSiNoExiste()
+    {
+        // Actuar
+        var sentencia = Assert.Single(ExpresionesUp(new M006_AgregarTelefonoContactoSolicitudes()).OfType<ExecuteSqlStatementExpression>()).SqlStatement;
+
+        // Afirmar: idempotente porque producción ya tiene la columna.
+        Assert.StartsWith("IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL", sentencia.Trim());
+        Assert.Contains("ALTER TABLE dbo.Solicitudes ADD TelefonoContacto NVARCHAR(20) NULL;", sentencia);
+    }
+
+    [Fact]
+    public void M006_Down_QuitaLaColumna()
+    {
+        // Actuar
+        var borrar = Assert.Single(ExpresionesDown(new M006_AgregarTelefonoContactoSolicitudes()).OfType<DeleteColumnExpression>());
+
+        // Afirmar
+        Assert.Equal("Solicitudes", borrar.TableName);
+        Assert.Equal("TelefonoContacto", Assert.Single(borrar.ColumnNames));
+        Assert.Contains("ALTER TABLE [dbo].[Solicitudes] DROP COLUMN [TelefonoContacto]", Generador.Generate(borrar));
     }
 }

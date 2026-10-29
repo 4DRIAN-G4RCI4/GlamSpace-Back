@@ -1,0 +1,37 @@
+# Evidencia 20 — HU-16: verificar la columna y correr el script 07 sobre la BD migrada
+# Fecha: 2026-10-29 14:06:23 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> Estructura
+
+TelefonoContacto ColumnasSolicitudes
+---------------- -------------------
+existe                            11
+(1 filas)
+
+Columna          Tipo     Longitud Nulos
+-------          ----     -------- -----
+TelefonoContacto nvarchar       20 NULL
+(1 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+202610291100 HU-16: columna TelefonoContacto en Solicitudes
+(6 filas)
+
+>>> El script 07 (el que se corrió en Azure) sobre la BD ya migrada: no hace nada
+>>> .\scripts\migraciones.ps1 script -Archivo Database\07_TelefonoSolicitudesHU16.sql
+Ejecutando Database\07_TelefonoSolicitudesHU16.sql en [GlamSpacesMigraciones]
+La columna TelefonoContacto ya existe.
+
+Columna          Tipo     Longitud Nulos
+-------          ----     -------- -----
+TelefonoContacto nvarchar       20 NULL
+(1 filas)
+# Código de salida: 0
