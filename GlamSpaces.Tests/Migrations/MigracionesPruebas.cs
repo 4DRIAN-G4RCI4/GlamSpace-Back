@@ -27,6 +27,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M004_IndiceUnicoBusquedasFavoritas), 202610230930)]
     [InlineData(typeof(M005_CrearSolicitudes), 202610291000)]
     [InlineData(typeof(M006_AgregarTelefonoContactoSolicitudes), 202610291100)]
+    [InlineData(typeof(M007_ProcedimientosSolicitudes), 202610291200)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -236,5 +237,52 @@ public class MigracionesPruebas
         Assert.Equal("Solicitudes", borrar.TableName);
         Assert.Equal("TelefonoContacto", Assert.Single(borrar.ColumnNames));
         Assert.Contains("ALTER TABLE [dbo].[Solicitudes] DROP COLUMN [TelefonoContacto]", Generador.Generate(borrar));
+    }
+
+    private static readonly string[] ProcedimientosHu15 = ["sp_Solicitud_Crear", "sp_Solicitud_Obtener", "sp_Solicitud_ListarPorCliente"];
+
+    [Fact]
+    public void M007_Up_CreaLosTresStoredProceduresConCreateOrAlter()
+    {
+        // Actuar
+        var sentencias = ExpresionesUp(new M007_ProcedimientosSolicitudes())
+            .Cast<ExecuteSqlStatementExpression>()
+            .Select(e => e.SqlStatement.Trim())
+            .ToList();
+
+        // Afirmar: un lote por SP, cada uno empezando con CREATE OR ALTER y sin separador GO.
+        Assert.Equal(3, sentencias.Count);
+        for (var i = 0; i < ProcedimientosHu15.Length; i++)
+        {
+            Assert.StartsWith($"CREATE OR ALTER PROCEDURE {ProcedimientosHu15[i]}", sentencias[i]);
+        }
+        Assert.DoesNotContain(sentencias, s => s.Contains("\nGO"));
+    }
+
+    [Fact]
+    public void M007_Up_CrearValidaFechaConBloqueoYTraduceElDuplicadoA4004()
+    {
+        // Actuar
+        var crear = ExpresionesUp(new M007_ProcedimientosSolicitudes()).Cast<ExecuteSqlStatementExpression>().First().SqlStatement;
+
+        // Afirmar
+        Assert.Contains("WITH (UPDLOCK, HOLDLOCK)", crear);
+        Assert.Contains("Estado = 'confirmada'", crear);
+        Assert.Contains("'pendiente', SYSUTCDATETIME()", crear);
+        Assert.Contains("ERROR_NUMBER() IN (2601, 2627)", crear);
+        Assert.Contains("@Codigo = 4004", crear);
+    }
+
+    [Fact]
+    public void M007_Down_BorraLosTresStoredProcedures()
+    {
+        // Actuar
+        var sentencias = ExpresionesDown(new M007_ProcedimientosSolicitudes())
+            .Cast<ExecuteSqlStatementExpression>()
+            .Select(e => e.SqlStatement)
+            .ToList();
+
+        // Afirmar
+        Assert.Equal(ProcedimientosHu15.Select(sp => $"DROP PROCEDURE IF EXISTS dbo.{sp};"), sentencias);
     }
 }

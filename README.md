@@ -19,6 +19,7 @@ Plataforma para encontrar y reservar salones de eventos.
 | Sprint 2.5 | Cambio completo de la infraestructura del backend | ✅ En producción |
 | Sprint 3 | HU-08: índices · HU-09: búsqueda y filtrado | ✅ En producción |
 | Sprint 4 | HU-11, HU-12: tabla de reservaciones · detalle y disponibilidad del salón | 🚧 En desarrollo |
+| Sprint 5 | HU-14, HU-16: tabla de solicitudes y teléfono de contacto · [HU-15: crear y consultar solicitudes](#sprint-5--solicitudes-hu-15) | 🚧 En desarrollo |
 
 ## Cómo correrla
 
@@ -310,6 +311,11 @@ También responden con este formato el JSON mal formado (`1001`) y cualquier err
 | 2004 | 400 | Estado inválido |
 | 3001 | 404 | Paquete no encontrado |
 | 3002 | 400 | Borrar el último paquete de un salón publicado |
+| 4001 | 404 | Solicitud no encontrada |
+| 4002 | 409 | La fecha ya no está disponible (el salón tiene una solicitud confirmada ese día) |
+| 4003 | 400 | El usuario no es cliente |
+| 4004 | 409 | Ya hay una solicitud pendiente del cliente para ese salón y fecha |
+| 4005 | 403 | La solicitud es de otro cliente |
 | 5000 | 500 | Error interno |
 
 ### Endpoints vigentes (todos POST)
@@ -330,6 +336,9 @@ Ya no hay parámetros en la URL: todo va en el body.
 | `/api/paquetes/crear` | `{ salonId, adminId, nombrePaquete, descripcion?, precio }` | Paquete |
 | `/api/paquetes/actualizar` | `{ id, adminId, nombrePaquete, descripcion?, precio }` | Paquete |
 | `/api/paquetes/eliminar` | `{ id, adminId }` | Id del paquete eliminado |
+| `/api/solicitudes/crear` | `{ clienteId, salonId, paqueteId?, fechaEvento, tipoEvento, numeroInvitados, telefonoContacto, comentarios? }` | Solicitud ([Sprint 5](#sprint-5--solicitudes-hu-15)) |
+| `/api/solicitudes/obtener` | `{ id, clienteId }` | Solicitud |
+| `/api/solicitudes/listar` | `{ clienteId, pagina, tamanoPagina }` | Listado paginado de solicitudes |
 
 Notas:
 - En `actualizar`, si `descripcion` no se manda, se borra; si `estado` no se manda, se conserva el actual.
@@ -640,3 +649,130 @@ Salida esperada: `RESULTADO HU-11: 6 de 6 pruebas correctas.`
 
 El script corre dentro de una transacción y al final hace `ROLLBACK`, así que **no deja datos** y
 se puede repetir. Necesita los datos de `04_DatosPrueba.sql`, por eso no aplica en producción.
+
+---
+
+## Sprint 5 — Solicitudes (HU-15)
+
+El cliente envía una solicitud de reservación para un salón y consulta su estado.
+Misma arquitectura del Sprint 2.5: 3 stored procedures nuevos, `SolicitudRepositorio` y `SolicitudesController`.
+Usa solo la tabla `dbo.Solicitudes` (HU-14 + `TelefonoContacto` de la HU-16); **no cambia el esquema**.
+
+| Pieza | Dónde |
+|---|---|
+| `sp_Solicitud_Crear`, `sp_Solicitud_Obtener`, `sp_Solicitud_ListarPorCliente` | Migración `M007_ProcedimientosSolicitudes` y `Database/08_SolicitudesHU15.sql` (mismo contenido) |
+| Endpoints | `GlamSpaces.Api/Controllers/SolicitudesController.cs` |
+| DTOs | `GlamSpaces.Domain/Dtos/SolicitudDtos.cs` |
+
+Los 3 endpoints regresan la solicitud con el mismo formato: sus datos, `nombreSalon`, `nombrePaquete`
+(`null` si no eligió paquete) y `estado` (`pendiente`, `confirmada` o `rechazada`). `fechaCreacion` va en UTC.
+
+### `POST /api/solicitudes/crear`
+
+```json
+{
+  "clienteId": 2,
+  "salonId": 1,
+  "paqueteId": 1,
+  "fechaEvento": "2027-01-10",
+  "tipoEvento": "Boda",
+  "numeroInvitados": 120,
+  "telefonoContacto": "7731234567",
+  "comentarios": "Ceremonia en el jardín."
+}
+```
+
+`paqueteId` y `comentarios` son opcionales. Respuesta:
+
+```json
+{
+  "codigo": 0, "mensaje": "Solicitud enviada correctamente.", "exito": true,
+  "datos": {
+    "id": 7, "salonId": 1, "nombreSalon": "Jardín Encanto", "clienteId": 2,
+    "paqueteId": 1, "nombrePaquete": "Paquete Básico",
+    "fechaEvento": "2027-01-10T00:00:00", "tipoEvento": "Boda", "numeroInvitados": 120,
+    "telefonoContacto": "7731234567", "comentarios": "Ceremonia en el jardín.",
+    "estado": "pendiente", "fechaCreacion": "2026-10-29T18:00:00.1234567"
+  }
+}
+```
+
+### `POST /api/solicitudes/obtener`
+
+```json
+{ "id": 7, "clienteId": 2 }
+```
+
+Regresa la misma estructura de `datos` que `crear`, con el `estado` actual y `"mensaje": "Consulta exitosa."`.
+
+### `POST /api/solicitudes/listar`
+
+```json
+{ "clienteId": 2, "pagina": 1, "tamanoPagina": 10 }
+```
+
+```json
+{
+  "codigo": 0, "mensaje": "Consulta exitosa.", "exito": true,
+  "pagina": 1, "tamanoPagina": 10, "totalRegistros": 2, "totalPaginas": 1,
+  "datos": [
+    { "id": 8, "nombreSalon": "Terraza Monarca", "fechaEvento": "2027-02-14T00:00:00", "estado": "pendiente" },
+    { "id": 7, "nombreSalon": "Jardín Encanto", "fechaEvento": "2027-01-10T00:00:00", "estado": "confirmada" }
+  ]
+}
+```
+
+(Cada elemento trae todos los campos de `crear`; aquí se recortan.) Sin solicitudes: `codigo: 0`,
+`datos: []` y `"mensaje": "No tienes solicitudes registradas."`.
+
+### Reglas
+
+Los 3 endpoints validan primero al usuario: si no existe → `1005`; si no es `cliente` → `4003`.
+
+`crear` valida en este orden:
+
+1. Salón que no existe o no está `publicado` → `2001`.
+2. `paqueteId` que no existe o no es de ese salón → `3001`.
+3. `tipoEvento` vacío, `telefonoContacto` vacío, fecha pasada o `numeroInvitados` ≤ 0 → `1001`, con un mensaje por campo.
+   La fecha se compara con el día de hoy en la hora del centro de México (la BD corre en UTC); hoy sí se permite.
+4. Más invitados que la capacidad del salón → `1001` (`"Los invitados exceden la capacidad del salón."`).
+5. El salón ya tiene una solicitud **confirmada** esa fecha → `4002` (`"La fecha ya no está disponible."`).
+   La revisión y el `INSERT` van en una transacción con `UPDLOCK, HOLDLOCK`, así que una confirmación simultánea no se cuela.
+6. El cliente ya tiene una solicitud **pendiente** para ese salón y fecha → `4004`. Lo detecta el índice
+   `UX_Solicitudes_Cliente_Salon_Fecha_Pendiente` (error 2601/2627), así que también aplica con peticiones simultáneas.
+
+La solicitud se guarda con `Estado = 'pendiente'` y `FechaCreacion = SYSUTCDATETIME()` explícitos (no depende de los `DEFAULT`).
+
+- `obtener`: solicitud que no existe → `4001`; de otro cliente → `4005`.
+- `listar`: solo las del cliente, de la más reciente a la más antigua (`FechaCreacion DESC`); `tamanoPagina` se limita a 100.
+
+| Código | HTTP | Mensaje |
+|---|---|---|
+| 4001 | 404 | La solicitud no existe. |
+| 4002 | 409 | La fecha ya no está disponible. |
+| 4003 | 400 | Solo los clientes pueden enviar (o consultar) solicitudes. |
+| 4004 | 409 | Ya tienes una solicitud pendiente para ese salón y fecha. |
+| 4005 | 403 | No tienes acceso a esta solicitud. |
+
+### Criterios de aceptación
+
+| # | Dado que / Cuando | Entonces |
+|---|---|---|
+| 1 | El cliente manda datos válidos y la fecha está disponible | Se crea la solicitud en estado `pendiente` (HTTP 200) |
+| 2 | La fecha ya no está disponible (el salón tiene una solicitud confirmada ese día) | Error `4002` (HTTP 409) y no se crea nada |
+| 3 | El cliente consulta una de sus solicitudes | Recibe su estado actual: `pendiente`, `confirmada` o `rechazada` |
+| 4 | El cliente lista sus solicitudes | Recibe todas las suyas, paginadas (lista vacía si no tiene) |
+
+Verificados contra un SQL Server 2022 local con los scripts 01 a 08, y con las pruebas unitarias de `GlamSpaces.Tests`.
+
+### Para desplegar
+
+En `glamspaces-db` la tabla y la columna ya existen: basta aplicar la migración `M007` o correr
+`Database/08_SolicitudesHU15.sql`. Los dos son idempotentes (`CREATE OR ALTER`). El rollback de `M007` borra los 3 SP.
+
+### Limitación conocida
+
+Todavía no hay JWT: el `clienteId` viaja en el body, así que cualquiera podría mandar el `clienteId`
+de otro cliente y ver o crear solicitudes a su nombre. La validación `4005` solo compara contra el
+`clienteId` recibido. Se corrige al implementar la autenticación con token: el `clienteId` se tomará
+del JWT y dejará de recibirse en el body.
