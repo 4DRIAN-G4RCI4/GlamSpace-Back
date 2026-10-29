@@ -1,0 +1,18 @@
+# Evidencia 19 — HU-16: aplicar la 006 (TelefonoContacto)
+# Fecha: 2026-10-29 14:06:20 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 subir
+#
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL
+    ALTER TABLE dbo.Solicitudes ADD TelefonoContacto NVARCHAR(20) NULL;
+Committing Transaction
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrated
+Task completed.
+# Código de salida: 0
