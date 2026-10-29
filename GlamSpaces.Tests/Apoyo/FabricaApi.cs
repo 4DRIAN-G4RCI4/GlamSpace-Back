@@ -9,6 +9,7 @@ public sealed class FabricaApi : WebApplicationFactory<Program>
     public IUsuarioRepositorio Usuarios { get; } = Substitute.For<IUsuarioRepositorio>();
     public ISalonRepositorio Salones { get; } = Substitute.For<ISalonRepositorio>();
     public IPaqueteRepositorio Paquetes { get; } = Substitute.For<IPaqueteRepositorio>();
+    public ISolicitudRepositorio Solicitudes { get; } = Substitute.For<ISolicitudRepositorio>();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -20,6 +21,7 @@ public sealed class FabricaApi : WebApplicationFactory<Program>
             servicios.AddScoped(_ => Usuarios);
             servicios.AddScoped(_ => Salones);
             servicios.AddScoped(_ => Paquetes);
+            servicios.AddScoped(_ => Solicitudes);
         });
     }
 }

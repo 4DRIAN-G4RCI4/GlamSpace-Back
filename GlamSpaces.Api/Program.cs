@@ -20,6 +20,7 @@ builder.Services.AddScoped<IDbConnection>(_ =>
 builder.Services.AddScoped<IUsuarioRepositorio, UsuarioRepositorio>();
 builder.Services.AddScoped<ISalonRepositorio, SalonRepositorio>();
 builder.Services.AddScoped<IPaqueteRepositorio, PaqueteRepositorio>();
+builder.Services.AddScoped<ISolicitudRepositorio, SolicitudRepositorio>();
 
 // Healthcheck para monitoreo: /health responde Healthy si la BD contesta.
 builder.Services.AddHealthChecks().AddCheck("azure-sql", () =>
