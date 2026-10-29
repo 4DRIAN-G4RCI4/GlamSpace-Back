@@ -1,0 +1,41 @@
+# Evidencia 14 — HU-14: rollback de la última migración (005) y verificación
+# Fecha: 2026-10-29 13:28:16 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 rollback   (dotnet-fm rollback ... by 1)
+#
+>>> .\scripts\migraciones.ps1 rollback
+-------------------------------------------------------------------------------
+202610291000: M005_CrearSolicitudes reverting
+-------------------------------------------------------------------------------
+Beginning Transaction
+DeleteTable Solicitudes
+Committing Transaction
+202610291000: M005_CrearSolicitudes reverted
+Task completed.
+
+>>> Verificación: .\scripts\migraciones.ps1 consultar -Sql "<¿existe Solicitudes?, CHECK, índice, VersionInfo>"
+
+TablaSolicitudes ChecksSolicitudes IndicePendientes TablasAnteriores
+---------------- ----------------- ---------------- ----------------
+NO existe                        0                0                5
+(1 filas)
+
+     Version Description                                               
+     ------- -----------                                               
+202610230900 Línea base: tablas, stored procedures e índices existentes
+202610230910 Crea la tabla BusquedasFavoritas                          
+202610230920 Agrega la columna Telefono a Salones                      
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas
+(4 filas)
+
+>>> .\scripts\migraciones.ps1 listar
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+⌘ 202610230930: M004_IndiceUnicoBusquedasFavoritas (current)
+202610291000: M005_CrearSolicitudes (not applied)
+Task completed.
+# Código de salida: 0

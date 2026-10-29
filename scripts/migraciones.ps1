@@ -11,6 +11,7 @@
       respaldar  Hace BACKUP DATABASE de la BD a un .bak local en respaldos/ y lo verifica.
       reset      Borra y recrea la BD local en LocalDB y corre todas las migraciones desde cero.
       consultar  Ejecuta una consulta de verificación (-Sql "SELECT ...") y muestra el resultado.
+      script     Ejecuta un script .sql de Database/ (-Archivo ...), lote por lote (separados por GO).
 
     Conexión por defecto: SOLO LocalDB (BD GlamSpacesMigraciones).
     Para otra BD de pruebas: variable de entorno GLAMSPACES_CONN.
@@ -19,13 +20,16 @@
 .EXAMPLE
     .\scripts\migraciones.ps1 listar
     .\scripts\migraciones.ps1 consultar -Sql "SELECT * FROM VersionInfo"
+    .\scripts\migraciones.ps1 script -Archivo Database\06_SolicitudesHU14.sql
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet("listar", "subir", "rollback", "reaplicar", "respaldar", "reset", "consultar")]
+    [ValidateSet("listar", "subir", "rollback", "reaplicar", "respaldar", "reset", "consultar", "script")]
     [string]$Accion,
 
-    [string]$Sql
+    [string]$Sql,
+
+    [string]$Archivo
 )
 
 $ErrorActionPreference = "Stop"
@@ -96,6 +100,16 @@ function Listar   { Compilar; Invocar-Fm @("list", "migrations") }
 function Subir    { Compilar; Invocar-Fm @("migrate") @("up") }
 function Revertir { Compilar; Invocar-Fm @("rollback") @("by", "1") }
 
+# SqlClient no entiende GO (es un separador de sqlcmd/SSMS): se parte el script en lotes.
+function Ejecutar-Script([string]$Ruta) {
+    $completa = if ([System.IO.Path]::IsPathRooted($Ruta)) { $Ruta } else { Join-Path $Raiz $Ruta }
+    if (-not (Test-Path $completa)) { throw "No existe el script $completa." }
+    Write-Host "Ejecutando $Ruta en [$BaseDatos]"
+    $lotes = [regex]::Split((Get-Content $completa -Raw -Encoding UTF8), '(?im)^\s*GO\s*$') |
+        Where-Object { $_.Trim().Length -gt 0 }
+    foreach ($lote in $lotes) { Ejecutar-Sql $lote }
+}
+
 function Respaldar {
     $carpeta = Join-Path $Raiz "respaldos"
     New-Item -ItemType Directory -Force -Path $carpeta | Out-Null
@@ -134,5 +148,9 @@ switch ($Accion) {
     "consultar" {
         if (-not $Sql) { throw "Indica la consulta con -Sql `"SELECT ...`"." }
         Ejecutar-Sql $Sql
+    }
+    "script" {
+        if (-not $Archivo) { throw "Indica el script con -Archivo Database\NN_....sql." }
+        Ejecutar-Script $Archivo
     }
 }

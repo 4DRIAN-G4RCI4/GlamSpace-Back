@@ -1,6 +1,7 @@
 # Migraciones de la base de datos con FluentMigrator.
 # Levanta un SQL Server 2022 desechable, corre todas las migraciones desde una BD vacía,
-# revierte la última (rollback by 1) y la vuelve a aplicar. Nunca toca Azure.
+# corre los scripts de datos de prueba y de la HU-14, revierte la última (rollback by 1)
+# y la vuelve a aplicar. Nunca toca Azure.
 #
 # Requiere el secret MSSQL_SA_PASSWORD (Settings > Secrets and variables > Actions):
 # una contraseña fuerte cualquiera (8+ caracteres con mayúsculas, minúsculas, números y símbolo).
@@ -94,23 +95,51 @@ jobs:
       - name: Listar (después, todo aplicado)
         run: dotnet tool run dotnet-fm -- list migrations -p $PROCESADOR -c "$CONN" -a $DLL
 
+      # Scripts de Database/ que no son migraciones (datos de prueba y semilla de la HU-14).
+      # Se copian al contenedor y se corren con sqlcmd (-I = QUOTED_IDENTIFIER ON).
+      - name: Copiar los scripts de Database/ al contenedor
+        run: docker cp Database/. ${{ job.services.sqlserver.id }}:/tmp/Database
+
+      # La semilla de 06_SolicitudesHU14.sql necesita un salón con paquete y un cliente:
+      # 04_DatosPrueba.sql crea los salones y paquetes de prueba; el cliente se agrega aquí.
+      - name: Datos de prueba previos a la semilla de la HU-14
+        run: |
+          docker exec ${{ job.services.sqlserver.id }} \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesMigraciones \
+            -i /tmp/Database/04_DatosPrueba.sql
+          docker exec ${{ job.services.sqlserver.id }} \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesMigraciones \
+            -Q "IF NOT EXISTS (SELECT 1 FROM dbo.Usuarios WHERE Correo = 'cliente.prueba@glamspaces.com') INSERT INTO dbo.Usuarios (NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro) VALUES ('Cliente de Prueba', 'cliente.prueba@glamspaces.com', 'sin-login', 'cliente', NULL, SYSUTCDATETIME());"
+
+      # Se corre dos veces: la segunda demuestra que el script es idempotente (no duplica nada).
+      - name: Script 06_SolicitudesHU14.sql (dos veces) y verificación de la semilla
+        run: |
+          for vez in 1 2; do
+            docker exec ${{ job.services.sqlserver.id }} \
+              /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesMigraciones \
+              -i /tmp/Database/06_SolicitudesHU14.sql
+          done
+          docker exec ${{ job.services.sqlserver.id }} \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones \
+            -Q "IF (SELECT COUNT(*) FROM dbo.Solicitudes) <> 3 OR (SELECT COUNT(DISTINCT Estado) FROM dbo.Solicitudes) <> 3 THROW 50000, 'La semilla de la HU-14 debe dejar 3 solicitudes, una por estado.', 1; PRINT 'OK: 3 solicitudes (pendiente, confirmada, rechazada).';"
+
       - name: Rollback de la última migración
         run: dotnet tool run dotnet-fm -- rollback -p $PROCESADOR -c "$CONN" -a $DLL by 1
 
-      - name: Verificar que el índice único ya no existe
+      - name: Verificar que la tabla Solicitudes ya no existe
         run: >
           docker exec ${{ job.services.sqlserver.id }}
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
-          -Q "IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'El rollback no quitó el índice.', 1; PRINT 'OK: el índice se quitó con el rollback.';"
+          -Q "IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NOT NULL THROW 50000, 'El rollback no quitó la tabla Solicitudes.', 1; PRINT 'OK: la tabla Solicitudes se quitó con el rollback.';"
 
-      - name: Listar (tras el rollback, la 004 queda pendiente)
+      - name: Listar (tras el rollback, la 005 queda pendiente)
         run: dotnet tool run dotnet-fm -- list migrations -p $PROCESADOR -c "$CONN" -a $DLL
 
       - name: Reaplicar
         run: dotnet tool run dotnet-fm -- migrate -p $PROCESADOR -c "$CONN" -a $DLL up
 
-      - name: Verificar que el índice volvió y ver el historial (VersionInfo)
+      - name: Verificar que Solicitudes volvió completa y ver el historial (VersionInfo)
         run: >
           docker exec ${{ job.services.sqlserver.id }}
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
-          -Q "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'La reaplicación no creó el índice.', 1; PRINT 'OK: el índice volvió.'; SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version;"
+          -Q "IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL THROW 50000, 'La reaplicación no creó Solicitudes.', 1; IF (SELECT COUNT(*) FROM sys.check_constraints WHERE name IN ('CK_Solicitudes_Invitados', 'CK_Solicitudes_Estado')) <> 2 THROW 50000, 'Faltan restricciones CHECK de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente' AND is_unique = 1 AND has_filter = 1) THROW 50000, 'Falta el índice único filtrado de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'Falta el índice de la 004.', 1; PRINT 'OK: Solicitudes con sus 2 CHECK y su índice único filtrado.'; SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version;"

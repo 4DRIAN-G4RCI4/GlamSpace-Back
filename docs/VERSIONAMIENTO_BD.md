@@ -1,6 +1,6 @@
 # Versionamiento de la base de datos — GlamSpace-Back
 
-**Actividad: Parte 2 · Sprint 4 · Responsable: Adrian Adonai García Jiménez**
+**Actividad: Parte 2 · Sprint 4 (y HU-14 del Sprint 5) · Responsable: Adrian Adonai García Jiménez**
 
 Herramienta: **FluentMigrator 8.0.1** · Base de datos: SQL Server (LocalDB en desarrollo, contenedor
 SQL Server 2022 en GitHub Actions; producción es Azure SQL, que **no** se toca en esta práctica).
@@ -118,6 +118,7 @@ scripts/migraciones.ps1            listar, subir, rollback, reaplicar, respaldar
 | 002 | `202610230910` | `M002_CrearTablaBusquedasFavoritas` | **Creación de tabla**: salones favoritos de un usuario. | `Create.Table("BusquedasFavoritas")`: `Id` (PK identity), `UsuarioId` (FK → `Usuarios`), `SalonId` (FK → `Salones`), `FechaCreacion DATETIME2 DEFAULT GETDATE()`. | `Delete.Table("BusquedasFavoritas")`. |
 | 003 | `202610230920` | `M003_AgregarColumnaTelefonoSalones` | **Adición de columna**. | `Alter.Table("Salones").AddColumn("Telefono").AsString(20).Nullable()` → `NVARCHAR(20) NULL`. | `Delete.Column("Telefono").FromTable("Salones")`. |
 | 004 | `202610230930` | `M004_IndiceUnicoBusquedasFavoritas` | **Índice / restricción**: un usuario no puede guardar el mismo salón dos veces. | `Create.Index("UX_BusquedasFavoritas_Usuario_Salon")` único sobre `(UsuarioId, SalonId)`. | `Delete.Index("UX_BusquedasFavoritas_Usuario_Salon")`. |
+| 005 | `202610291000` | `M005_CrearSolicitudes` | **HU-14 (Sprint 5)**: tabla `Solicitudes` de solicitudes de reservación. Ya existía en producción (se creó a mano), por eso es idempotente. Ver [sección 12](#12-sprint-5--hu-14-tabla-solicitudes). | 4 lotes `Execute.Sql`, cada uno con `IF OBJECT_ID … IS NULL` / `IF NOT EXISTS`: tabla con PK, 3 FK y 2 `DEFAULT`; `CK_Solicitudes_Invitados`; `CK_Solicitudes_Estado`; índice único filtrado `UX_Solicitudes_Cliente_Salon_Fecha_Pendiente`. | `Delete.Table("Solicitudes")` (se van con ella sus restricciones e índice). |
 
 **Detalle técnico de la línea base:** FluentMigrator no acepta el separador `GO` dentro de un mismo
 `Execute.Sql`, y los scripts de `Database/` lo usan entre cada SP. `ScriptsSql.Lotes()` divide cada
@@ -1823,14 +1824,618 @@ corrida posterior, ya sin ese error.
 - **Workflow `Migraciones BD`:** se dispara en push a `develop`, `main` y `Sprint4_Adrian`, y en PR hacia
   `develop` y `main`. Levanta un contenedor `mcr.microsoft.com/mssql/server:2022-latest` (contraseña desde
   el secret `MSSQL_SA_PASSWORD`), crea una BD vacía y ejecuta: listar → `migrate up` → listar →
-  `rollback by 1` → verificación de que el índice se quitó → listar → `migrate up` → verificación de que
-  el índice volvió + `VersionInfo`. Si una verificación falla, el job falla.
+  `04_DatosPrueba.sql` + un cliente de prueba → `06_SolicitudesHU14.sql` dos veces (verifica 3 solicitudes,
+  una por estado) → `rollback by 1` → verificación de que `Solicitudes` se quitó → listar → `migrate up` →
+  verificación de que `Solicitudes` volvió con sus 2 CHECK y su índice filtrado + `VersionInfo`.
+  Si una verificación falla, el job falla. (Hasta el Sprint 4 la última migración era la 004 y el
+  rollback verificaba su índice; desde la HU-14 la última es la 005.)
 
 > 📸 **CAPTURA AQUÍ:** el workflow "Migraciones BD" en verde en la pestaña *Actions* de GitHub.
 
 ---
 
-## 12. Capturas de pantalla
+## 12. Sprint 5 — HU-14: tabla Solicitudes
+
+**Rama:** `Sprint5_Adrian` (PR hacia `develop`) · **Migración:** `M005_CrearSolicitudes` (`202610291000`)
+· **Script:** `Database/06_SolicitudesHU14.sql`
+
+### Por qué hubo que versionarla
+
+La tabla `Solicitudes` se creó **a mano en Azure** (`glamspaces-db`) para que el equipo pudiera
+avanzar con la HU-14. Si no queda en el repo, cualquier BD nueva (la local de un compañero, el
+contenedor de GitHub Actions) se queda sin ella, y la HU-15 depende de esta tabla. Ahora queda en
+dos lugares que se complementan:
+
+| Archivo | Qué contiene | Quién lo usa |
+|---|---|---|
+| `GlamSpaces.Migrations/Migraciones/005_CrearSolicitudes.cs` | Solo el **esquema**: tabla, restricciones e índice. Up idempotente, Down real. | `dotnet-fm` / `scripts/migraciones.ps1` / workflow `Migraciones BD`. |
+| `Database/06_SolicitudesHU14.sql` | El mismo esquema **más la semilla** de 3 solicitudes. Es el script que se aplicó en Azure. | Se corre a mano (SSMS, `sqlcmd` o `migraciones.ps1 script`) y lo ejecuta el workflow. |
+
+La semilla **no** va dentro de la migración por dos razones: en una BD recién creada no hay salones
+ni clientes (la semilla haría `THROW` y la migración fallaría), y en producción los datos ya se
+cargaron a mano.
+
+### Modelo
+
+| Columna | Tipo | Nulos | Restricción |
+|---|---|---|---|
+| `Id` | `INT IDENTITY(1,1)` | NOT NULL | `PK_Solicitudes` |
+| `SalonId` | `INT` | NOT NULL | `FK_Solicitudes_Salones` → `Salones(Id)` |
+| `ClienteId` | `INT` | NOT NULL | `FK_Solicitudes_Usuarios` → `Usuarios(Id)` |
+| `PaqueteId` | `INT` | NULL | `FK_Solicitudes_Paquetes` → `Paquetes(Id)` |
+| `FechaEvento` | `DATE` | NOT NULL | |
+| `TipoEvento` | `NVARCHAR(100)` | NOT NULL | |
+| `NumeroInvitados` | `INT` | NOT NULL | `CK_Solicitudes_Invitados`: `NumeroInvitados > 0` |
+| `Comentarios` | `NVARCHAR(500)` | NULL | |
+| `Estado` | `NVARCHAR(20)` | NOT NULL | `DF_Solicitudes_Estado` = `'pendiente'`; `CK_Solicitudes_Estado`: `pendiente`, `confirmada` o `rechazada` |
+| `FechaCreacion` | `DATETIME2(7)` | NOT NULL | `DF_Solicitudes_FechaCreacion` = `SYSUTCDATETIME()` |
+
+**Índice único filtrado** `UX_Solicitudes_Cliente_Salon_Fecha_Pendiente` sobre
+`(ClienteId, SalonId, FechaEvento) WHERE Estado = 'pendiente'`: un cliente no puede tener **dos
+solicitudes pendientes** para el mismo salón y la misma fecha. Las confirmadas o rechazadas no
+cuentan, así que puede volver a pedir esa fecha si antes se la rechazaron. Como todo índice
+filtrado, exige `QUOTED_IDENTIFIER ON`.
+
+### Up idempotente y Down
+
+- **Up** se divide en 4 lotes `Execute.Sql`: tabla, `CK_Solicitudes_Invitados`, `CK_Solicitudes_Estado`
+  e índice. Cada uno revisa antes si ya existe (`IF OBJECT_ID(...) IS NULL`, `IF NOT EXISTS` en
+  `sys.check_constraints` y `sys.indexes`). Van en lotes separados para que cada verificación vea la tabla
+  ya creada. No se usó la API fluida (`Create.Table`) porque no puede preguntar "si no existe" y
+  fallaría en Azure, donde la tabla ya está.
+- **Down** borra la tabla (`Delete.Table("Solicitudes")` → `DROP TABLE [dbo].[Solicitudes]`); sus
+  restricciones e índice se van con ella.
+- **En Azure**, cuando el equipo decida aplicar las migraciones, la 005 encontrará todo creado, no
+  cambiará nada y solo quedará registrada en `VersionInfo` (se simuló en la evidencia 16).
+
+### Semilla de `06_SolicitudesHU14.sql`
+
+Toma el **primer salón** (`MIN(Id)`), **su primer paquete** y el **primer usuario con
+`TipoCuenta = 'cliente'`**. Si falta alguno, se detiene con `THROW` (50001 salón, 50002 paquete,
+50003 cliente) en lugar de insertar datos incompletos. Inserta una solicitud por estado (`pendiente`,
+`confirmada`, `rechazada`) y no duplica nada si se vuelve a correr.
+
+### Pruebas unitarias (sin base de datos)
+
+En `GlamSpaces.Tests/Migrations/MigracionesPruebas.cs` (82 pruebas en total, todas en verde):
+
+- La 005 se agregó a la prueba de versión y descripción (`202610291000`).
+- `M005_Up_CreaSolicitudesEnCuatroLotesIdempotentes`: 4 lotes, cada uno con su `IF … IS NULL / IF NOT EXISTS`, sin `GO`.
+- `M005_Up_DefineLasColumnasYLlavesDeLaHu14`: las 10 columnas con su tipo, nulos, PK, FK y DEFAULT.
+- `M005_Up_AgregaLosChecksYElIndiceUnicoFiltradoDePendientes`: los 2 CHECK y el índice filtrado con `QUOTED_IDENTIFIER ON`.
+- `M005_Down_BorraLaTablaSolicitudes`: el SQL generado es `DROP TABLE [dbo].[Solicitudes]`.
+
+Cobertura local de `GlamSpaces.Migrations`: **100 %** (103/103 líneas, 4/4 ramas).
+
+### Prueba local con `scripts/migraciones.ps1` (LocalDB, nunca Azure)
+
+Para correr el script 06 se agregó la acción `script` al script de migraciones. Parte el `.sql` en
+lotes por `GO`, igual que `sqlcmd`:
+
+```powershell
+.\scripts\migraciones.ps1 script -Archivo Database\06_SolicitudesHU14.sql
+```
+
+Orden: listar → subir → verificar → script 06 → rollback 1 → reaplicar → BD que ya tiene la tabla
+(como Azure) → reset y todo desde cero.
+
+#### Listar: la 005 aparece pendiente — [`10_hu14_list_antes.txt`](evidencias/10_hu14_list_antes.txt)
+
+```text
+# Evidencia 10 — HU-14: listar antes de aplicar (la 005 aparece pendiente)
+# Fecha: 2026-10-29 13:27:03 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 listar
+#
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+⌘ 202610230930: M004_IndiceUnicoBusquedasFavoritas (current)
+202610291000: M005_CrearSolicitudes (not applied)
+Task completed.
+# Código de salida: 0
+```
+
+#### Subir — [`11_hu14_migrate_up.txt`](evidencias/11_hu14_migrate_up.txt)
+
+```text
+# Evidencia 11 — HU-14: aplicar la migración pendiente (005, tabla Solicitudes)
+# Fecha: 2026-10-29 13:27:07 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 subir
+#
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610291000: M005_CrearSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Solicitudes (
+        Id              INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Solicitudes PRIMARY KEY,
+        SalonId         INT           NOT NULL CONSTRAINT FK_Solicitudes_Salones  REFERENCES dbo.Salones(Id),
+        ClienteId       INT           NOT NULL CONSTRAINT FK_Solicitudes_Usuarios REFERENCES dbo.Usuarios(Id),
+        PaqueteId       INT           NULL     CONSTRAINT FK_Solicitudes_Paquetes REFERENCES dbo.Paquetes(Id),
+        FechaEvento     DATE          NOT NULL,
+        TipoEvento      NVARCHAR(100) NOT NULL,
+        NumeroInvitados INT           NOT NULL,
+        Comentarios     NVARCHAR(500) NULL,
+        Estado          NVARCHAR(20)  NOT NULL CONSTRAINT DF_Solicitudes_Estado DEFAULT 'pendiente',
+        FechaCreacion   DATETIME2(7)  NOT NULL CONSTRAINT DF_Solicitudes_FechaCreacion DEFAULT SYSUTCDATETIME()
+    );
+END
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Invitados')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Invitados CHECK (NumeroInvitados > 0);
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Estado')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Estado CHECK (Estado IN ('pendiente', 'confirmada', 'rechazada'));
+ExecuteSqlStatement 
+SET QUOTED_IDENTIFIER ON;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente'
+               AND object_id = OBJECT_ID(N'dbo.Solicitudes'))
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Solicitudes_Cliente_Salon_Fecha_Pendiente
+        ON dbo.Solicitudes (ClienteId, SalonId, FechaEvento)
+        WHERE Estado = 'pendiente';
+Committing Transaction
+202610291000: M005_CrearSolicitudes migrated
+Task completed.
+# Código de salida: 0
+```
+
+#### Verificar la estructura — [`12_hu14_verificar.txt`](evidencias/12_hu14_verificar.txt)
+
+```text
+# Evidencia 12 — HU-14: verificar la estructura de Solicitudes (columnas, llaves, CHECK, índice) y VersionInfo
+# Fecha: 2026-10-29 13:27:33 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 consultar -Sql "<consultas a sys.columns, sys.foreign_keys, sys.check_constraints, sys.indexes y VersionInfo>"
+#
+
+ N Columna         Tipo          Nulos    Identidad PorDefecto        
+ - -------         ----          -----    --------- ----------        
+ 1 Id              int           NOT NULL      True                   
+ 2 SalonId         int           NOT NULL     False                   
+ 3 ClienteId       int           NOT NULL     False                   
+ 4 PaqueteId       int           NULL         False                   
+ 5 FechaEvento     date          NOT NULL     False                   
+ 6 TipoEvento      nvarchar(100) NOT NULL     False                   
+ 7 NumeroInvitados int           NOT NULL     False                   
+ 8 Comentarios     nvarchar(500) NULL         False                   
+ 9 Estado          nvarchar(20)  NOT NULL     False ('pendiente')     
+10 FechaCreacion   datetime2(7)  NOT NULL     False (sysutcdatetime())
+(10 filas)
+
+Restriccion                  Tipo                  
+-----------                  ----                  
+CK_Solicitudes_Estado        CHECK_CONSTRAINT      
+CK_Solicitudes_Invitados     CHECK_CONSTRAINT      
+DF_Solicitudes_Estado        DEFAULT_CONSTRAINT    
+DF_Solicitudes_FechaCreacion DEFAULT_CONSTRAINT    
+FK_Solicitudes_Paquetes      FOREIGN_KEY_CONSTRAINT
+FK_Solicitudes_Salones       FOREIGN_KEY_CONSTRAINT
+FK_Solicitudes_Usuarios      FOREIGN_KEY_CONSTRAINT
+PK_Solicitudes               PRIMARY_KEY_CONSTRAINT
+(8 filas)
+
+LlaveForanea            Columna   Referencia
+------------            -------   ----------
+FK_Solicitudes_Paquetes PaqueteId Paquetes  
+FK_Solicitudes_Salones  SalonId   Salones   
+FK_Solicitudes_Usuarios ClienteId Usuarios
+(3 filas)
+
+CheckRestriccion         Definicion                                                             
+----------------         ----------                                                             
+CK_Solicitudes_Estado    ([Estado]='rechazada' OR [Estado]='confirmada' OR [Estado]='pendiente')
+CK_Solicitudes_Invitados ([NumeroInvitados]>(0))
+(2 filas)
+
+Indice                                       Unico Filtrado Filtro                 Columnas                       
+------                                       ----- -------- ------                 --------                       
+PK_Solicitudes                                True    False                        Id                             
+UX_Solicitudes_Cliente_Salon_Fecha_Pendiente  True     True ([Estado]='pendiente') ClienteId, SalonId, FechaEvento
+(2 filas)
+
+     Version AppliedOn                 Description                                                            
+     ------- ---------                 -----------                                                            
+202610230900 24/10/2026 04:10:58 a. m. Línea base: tablas, stored procedures e índices existentes             
+202610230910 24/10/2026 04:10:58 a. m. Crea la tabla BusquedasFavoritas                                       
+202610230920 24/10/2026 04:10:58 a. m. Agrega la columna Telefono a Salones                                   
+202610230930 24/10/2026 04:10:58 a. m. Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 29/10/2026 07:27:10 p. m. HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+(5 filas)
+# Código de salida: 0
+```
+
+> 📸 **CAPTURA AQUÍ:** la tabla `Solicitudes` (columnas, llaves y el índice filtrado) en SSMS o en el Explorador de objetos.
+
+#### Script 06: THROW sin datos, semilla, idempotencia y restricciones — [`13_hu14_script06_semilla.txt`](evidencias/13_hu14_script06_semilla.txt)
+
+El paso A muestra el `THROW` cuando no hay salones. Los pasos B y C cargan los datos previos, solo
+en LocalDB. D y E corren el script dos veces y quedan las mismas 3 filas. F comprueba que la BD
+rechaza 0 invitados, el estado `cancelada`, una segunda solicitud pendiente igual y un salón que no
+existe. También muestra que `Estado` y `FechaCreacion` toman su valor `DEFAULT`.
+
+```text
+# Evidencia 13 — HU-14: script 06_SolicitudesHU14.sql (THROW sin datos, semilla, idempotencia y restricciones)
+# Fecha: 2026-10-29 13:27:59 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> Paso A: 06 en la BD recién migrada (sin salones ni clientes): la semilla debe hacer THROW
+>>> .\scripts\migraciones.ps1 script -Archivo Database\06_SolicitudesHU14.sql
+Ejecutando Database\06_SolicitudesHU14.sql en [GlamSpacesMigraciones]
+La tabla Solicitudes ya existe.
+C:\Trabajos ADRIAN\trabajos escolares\TrabajoAplicacionesWeb\Backend\GlamSpace-Back\scripts\migraciones.ps1 : 
+Excepción al llamar a "ExecuteReader" con los argumentos "0": "Semilla HU-14: no hay ningún salón en dbo.Salones."
+    + CategoryInfo          : NotSpecified: (:) [migraciones.ps1], MethodInvocationException
+    + FullyQualifiedErrorId : SqlException,migraciones.ps1
+ 
+# (código de salida del paso A: 1)
+
+>>> Paso B: datos previos — 04_DatosPrueba.sql (salones y paquetes de prueba)
+>>> .\scripts\migraciones.ps1 script -Archivo Database\04_DatosPrueba.sql
+Ejecutando Database\04_DatosPrueba.sql en [GlamSpacesMigraciones]
+
+Id Nombre                       Zona                  Capacidad Estado       PrecioDesde
+-- ------                       ----                  --------- ------       -----------
+ 1 [Prueba] Jardín Encanto      Tula de Allende, Hgo.       150 publicado        8500.00
+ 2 [Prueba] Terraza Monarca     Tepeji del Río, Hgo.         80 publicado        5000.00
+ 3 [Prueba] Hacienda El Rosario Tula de Allende, Hgo.       400 publicado       30000.00
+ 4 [Prueba] Salón Fiesta Kids   Tlahuelilpan, Hgo.          100 publicado        3500.00
+ 5 [Prueba] Quinta Las Palmas   Mixquiahuala, Hgo.          250 publicado       12000.00
+ 6 [Prueba] Jardín Oculto       Tula de Allende, Hgo.       500 no_publicado     1000.00
+(6 filas)
+
+Id SalonId FechaEvento               Estado    
+-- ------- -----------               ------    
+ 1       1 14/11/2026 12:00:00 a. m. confirmada
+ 2       1 21/11/2026 12:00:00 a. m. confirmada
+ 3       1 28/11/2026 12:00:00 a. m. pendiente
+(3 filas)
+# (código de salida del paso B: 0)
+
+>>> Paso C: un usuario con TipoCuenta = 'cliente' (solo para la BD local)
+>>> .\scripts\migraciones.ps1 consultar -Sql "IF NOT EXISTS (...) INSERT INTO Usuarios (...) VALUES ('Cliente de Prueba', ..., 'cliente', ...)"
+
+Id NombreCompleto    TipoCuenta
+-- --------------    ----------
+ 2 Cliente de Prueba cliente
+(1 filas)
+# (código de salida del paso C: 0)
+
+>>> Paso D: 06 por primera vez con datos: crea las 3 solicitudes
+Ejecutando Database\06_SolicitudesHU14.sql en [GlamSpacesMigraciones]
+La tabla Solicitudes ya existe.
+
+Id SalonId ClienteId PaqueteId FechaEvento               TipoEvento NumeroInvitados Estado    
+-- ------- --------- --------- -----------               ---------- --------------- ------    
+ 1       1         2         1 05/12/2026 12:00:00 a. m. Boda                   120 pendiente 
+ 2       1         2         1 12/12/2026 12:00:00 a. m. XV años                 90 confirmada
+ 3       1         2         1 19/12/2026 12:00:00 a. m. Cumpleaños              40 rechazada
+(3 filas)
+# (código de salida del paso D: 0)
+
+>>> Paso E: 06 por segunda vez: idempotente, no duplica nada
+Ejecutando Database\06_SolicitudesHU14.sql en [GlamSpacesMigraciones]
+La tabla Solicitudes ya existe.
+
+Id SalonId ClienteId PaqueteId FechaEvento               TipoEvento NumeroInvitados Estado    
+-- ------- --------- --------- -----------               ---------- --------------- ------    
+ 1       1         2         1 05/12/2026 12:00:00 a. m. Boda                   120 pendiente 
+ 2       1         2         1 12/12/2026 12:00:00 a. m. XV años                 90 confirmada
+ 3       1         2         1 19/12/2026 12:00:00 a. m. Cumpleaños              40 rechazada
+(3 filas)
+# (código de salida del paso E: 0)
+
+>>> Paso F: las restricciones rechazan datos inválidos (cada INSERT va en TRY/CATCH)
+>>> .\scripts\migraciones.ps1 consultar -Sql "<INSERT inválidos en TRY/CATCH>"
+OK invitados = 0 rechazado -> 547: The INSERT statement conflicted with the CHECK constraint "CK_Solicitudes_Invitados". The conflict occurred in database "GlamSpacesMigraciones", table "dbo.Solicitudes", column 'NumeroInvitados'.
+OK estado cancelada rechazado -> 547: The INSERT statement conflicted with the CHECK constraint "CK_Solicitudes_Estado". The conflict occurred in database "GlamSpacesMigraciones", table "dbo.Solicitudes", column 'Estado'.
+OK segunda pendiente mismo cliente/salón/fecha rechazada -> 2601: Cannot insert duplicate key row in object 'dbo.Solicitudes' with unique index 'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente'. The duplicate key value is (2, 1, 2026-12-05).
+OK salón inexistente rechazado -> 547: The INSERT statement conflicted with the FOREIGN KEY constraint "FK_Solicitudes_Salones". The conflict occurred in database "GlamSpacesMigraciones", table "dbo.Salones", column 'Id'.
+OK DEFAULT: Estado y FechaCreacion se llenan solos (se revierte con ROLLBACK)
+
+Estado    FechaCreacion            
+------    -------------            
+pendiente 29/10/2026 07:28:03 p. m.
+(1 filas)
+
+Estado     Total
+------     -----
+confirmada     1
+pendiente      1
+rechazada      1
+(3 filas)
+# Código de salida: 0
+```
+
+#### Rollback de la 005 — [`14_hu14_rollback.txt`](evidencias/14_hu14_rollback.txt)
+
+Antes de cualquier rollback fuera de una BD desechable va el respaldo (`respaldar`, sección 7).
+Aquí la BD es local y se recrea en el último paso.
+
+```text
+# Evidencia 14 — HU-14: rollback de la última migración (005) y verificación
+# Fecha: 2026-10-29 13:28:16 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 rollback   (dotnet-fm rollback ... by 1)
+#
+>>> .\scripts\migraciones.ps1 rollback
+-------------------------------------------------------------------------------
+202610291000: M005_CrearSolicitudes reverting
+-------------------------------------------------------------------------------
+Beginning Transaction
+DeleteTable Solicitudes
+Committing Transaction
+202610291000: M005_CrearSolicitudes reverted
+Task completed.
+
+>>> Verificación: .\scripts\migraciones.ps1 consultar -Sql "<¿existe Solicitudes?, CHECK, índice, VersionInfo>"
+
+TablaSolicitudes ChecksSolicitudes IndicePendientes TablasAnteriores
+---------------- ----------------- ---------------- ----------------
+NO existe                        0                0                5
+(1 filas)
+
+     Version Description                                               
+     ------- -----------                                               
+202610230900 Línea base: tablas, stored procedures e índices existentes
+202610230910 Crea la tabla BusquedasFavoritas                          
+202610230920 Agrega la columna Telefono a Salones                      
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas
+(4 filas)
+
+>>> .\scripts\migraciones.ps1 listar
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+⌘ 202610230930: M004_IndiceUnicoBusquedasFavoritas (current)
+202610291000: M005_CrearSolicitudes (not applied)
+Task completed.
+# Código de salida: 0
+```
+
+#### Reaplicar — [`15_hu14_reaplicar.txt`](evidencias/15_hu14_reaplicar.txt)
+
+```text
+# Evidencia 15 — HU-14: reaplicar la 005 tras el rollback
+# Fecha: 2026-10-29 13:28:23 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 reaplicar
+#
+>>> .\scripts\migraciones.ps1 reaplicar   (subir + listar)
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610291000: M005_CrearSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Solicitudes (
+        Id              INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Solicitudes PRIMARY KEY,
+        SalonId         INT           NOT NULL CONSTRAINT FK_Solicitudes_Salones  REFERENCES dbo.Salones(Id),
+        ClienteId       INT           NOT NULL CONSTRAINT FK_Solicitudes_Usuarios REFERENCES dbo.Usuarios(Id),
+        PaqueteId       INT           NULL     CONSTRAINT FK_Solicitudes_Paquetes REFERENCES dbo.Paquetes(Id),
+        FechaEvento     DATE          NOT NULL,
+        TipoEvento      NVARCHAR(100) NOT NULL,
+        NumeroInvitados INT           NOT NULL,
+        Comentarios     NVARCHAR(500) NULL,
+        Estado          NVARCHAR(20)  NOT NULL CONSTRAINT DF_Solicitudes_Estado DEFAULT 'pendiente',
+        FechaCreacion   DATETIME2(7)  NOT NULL CONSTRAINT DF_Solicitudes_FechaCreacion DEFAULT SYSUTCDATETIME()
+    );
+END
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Invitados')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Invitados CHECK (NumeroInvitados > 0);
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Estado')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Estado CHECK (Estado IN ('pendiente', 'confirmada', 'rechazada'));
+ExecuteSqlStatement 
+SET QUOTED_IDENTIFIER ON;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente'
+               AND object_id = OBJECT_ID(N'dbo.Solicitudes'))
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Solicitudes_Cliente_Salon_Fecha_Pendiente
+        ON dbo.Solicitudes (ClienteId, SalonId, FechaEvento)
+        WHERE Estado = 'pendiente';
+Committing Transaction
+202610291000: M005_CrearSolicitudes migrated
+Task completed.
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+⌘ 202610291000: M005_CrearSolicitudes (current)
+Task completed.
+
+>>> Verificación: .\scripts\migraciones.ps1 consultar -Sql "<¿existe Solicitudes?, CHECK, índice, VersionInfo>"
+
+TablaSolicitudes ChecksSolicitudes IndicePendientes TablasAnteriores
+---------------- ----------------- ---------------- ----------------
+existe                           2                1                5
+(1 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+(5 filas)
+# Código de salida: 0
+```
+
+#### La 005 sobre una BD que ya tiene la tabla (como `glamspaces-db`) — [`16_hu14_idempotencia_azure.txt`](evidencias/16_hu14_idempotencia_azure.txt)
+
+```text
+# Evidencia 16 — HU-14: la 005 sobre una BD que YA tiene Solicitudes (simula glamspaces-db)
+# Fecha: 2026-10-29 13:28:47 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> Paso A: se crea la tabla a mano con el script 06 (como se hizo en glamspaces-db) y se quita la 005 de VersionInfo
+>>> .\scripts\migraciones.ps1 consultar -Sql "DELETE FROM VersionInfo WHERE Version = 202610291000"
+La 005 ya no figura en VersionInfo; la tabla Solicitudes sigue existiendo.
+>>> .\scripts\migraciones.ps1 script -Archivo Database\06_SolicitudesHU14.sql
+Ejecutando Database\06_SolicitudesHU14.sql en [GlamSpacesMigraciones]
+La tabla Solicitudes ya existe.
+
+Id SalonId ClienteId PaqueteId FechaEvento               TipoEvento NumeroInvitados Estado    
+-- ------- --------- --------- -----------               ---------- --------------- ------    
+ 1       1         2         1 05/12/2026 12:00:00 a. m. Boda                   120 pendiente 
+ 2       1         2         1 12/12/2026 12:00:00 a. m. XV años                 90 confirmada
+ 3       1         2         1 19/12/2026 12:00:00 a. m. Cumpleaños              40 rechazada
+(3 filas)
+
+>>> .\scripts\migraciones.ps1 listar
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+⌘ 202610230930: M004_IndiceUnicoBusquedasFavoritas (current)
+202610291000: M005_CrearSolicitudes (not applied)
+Task completed.
+
+>>> Paso B: subir — la 005 encuentra todo creado, se salta cada parte y solo queda registrada
+>>> .\scripts\migraciones.ps1 subir
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202610291000: M005_CrearSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Solicitudes (
+        Id              INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Solicitudes PRIMARY KEY,
+        SalonId         INT           NOT NULL CONSTRAINT FK_Solicitudes_Salones  REFERENCES dbo.Salones(Id),
+        ClienteId       INT           NOT NULL CONSTRAINT FK_Solicitudes_Usuarios REFERENCES dbo.Usuarios(Id),
+        PaqueteId       INT           NULL     CONSTRAINT FK_Solicitudes_Paquetes REFERENCES dbo.Paquetes(Id),
+        FechaEvento     DATE          NOT NULL,
+        TipoEvento      NVARCHAR(100) NOT NULL,
+        NumeroInvitados INT           NOT NULL,
+        Comentarios     NVARCHAR(500) NULL,
+        Estado          NVARCHAR(20)  NOT NULL CONSTRAINT DF_Solicitudes_Estado DEFAULT 'pendiente',
+        FechaCreacion   DATETIME2(7)  NOT NULL CONSTRAINT DF_Solicitudes_FechaCreacion DEFAULT SYSUTCDATETIME()
+    );
+END
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Invitados')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Invitados CHECK (NumeroInvitados > 0);
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Estado')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Estado CHECK (Estado IN ('pendiente', 'confirmada', 'rechazada'));
+ExecuteSqlStatement 
+SET QUOTED_IDENTIFIER ON;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente'
+               AND object_id = OBJECT_ID(N'dbo.Solicitudes'))
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Solicitudes_Cliente_Salon_Fecha_Pendiente
+        ON dbo.Solicitudes (ClienteId, SalonId, FechaEvento)
+        WHERE Estado = 'pendiente';
+Committing Transaction
+202610291000: M005_CrearSolicitudes migrated
+Task completed.
+
+>>> Verificación (las 3 solicitudes siguen ahí, sin duplicados ni errores)
+
+TablaSolicitudes ChecksSolicitudes IndicePendientes TablasAnteriores FilasSolicitudes
+---------------- ----------------- ---------------- ---------------- ----------------
+existe                           2                1                5                3
+(1 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+(5 filas)
+# Código de salida: 0
+```
+
+#### Reset limpio: 001 a 005 desde cero — [`17_hu14_reset_desde_cero.txt`](evidencias/17_hu14_reset_desde_cero.txt)
+
+La salida completa (más de 700 líneas, con los 12 SP de la línea base) está en el archivo. Aquí va
+el inicio y el final:
+
+```text
+# Evidencia 17 — HU-14: reset limpio y todas las migraciones (001–005) desde cero
+# Fecha: 2026-10-29 13:28:56 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 reset
+#
+>>> .\scripts\migraciones.ps1 reset   (borra y recrea la BD en LocalDB y aplica todo)
+Borrando y recreando [GlamSpacesMigraciones] en (localdb)\MSSQLLocalDB
+Base de datos [GlamSpacesMigraciones] creada vacía.
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+VersionMigration migrating
+...
+        WHERE Estado = 'pendiente';
+Committing Transaction
+202610291000: M005_CrearSolicitudes migrated
+Task completed.
+
+>>> .\scripts\migraciones.ps1 listar
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+⌘ 202610291000: M005_CrearSolicitudes (current)
+Task completed.
+
+>>> Verificación
+
+TablaSolicitudes ChecksSolicitudes IndicePendientes TablasAnteriores FilasSolicitudes
+---------------- ----------------- ---------------- ---------------- ----------------
+existe                           2                1                5                0
+(1 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+(5 filas)
+# Código de salida: 0
+```
+
+> 📸 **CAPTURA AQUÍ:** el reset con la 005 en `(current)` y el `SELECT` de `VersionInfo` con las 5 migraciones.
+
+### En el workflow `Migraciones BD`
+
+Ver sección 11: después de migrar, el workflow corre `04_DatosPrueba.sql`, crea un cliente de prueba
+y ejecuta `06_SolicitudesHU14.sql` dos veces. Después revierte la 005, comprueba que `Solicitudes`
+desapareció, la reaplica y comprueba que volvió completa.
+
+---
+
+## 13. Capturas de pantalla
 
 Lugares marcados con **CAPTURA AQUÍ** en este documento:
 
@@ -1839,6 +2444,7 @@ Lugares marcados con **CAPTURA AQUÍ** en este documento:
 3. Sección 8: reaplicación + consulta `EXISTE`.
 4. Sección 9: reset limpio y `SELECT` de `VersionInfo`.
 5. Sección 11: workflow "Migraciones BD" en verde en GitHub Actions.
+6. Sección 12 (HU-14): la tabla `Solicitudes` en SSMS y el reset con la 005 en `(current)`.
 
 Opcionales:
 
