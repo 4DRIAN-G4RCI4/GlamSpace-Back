@@ -178,4 +178,60 @@ public class DtosPruebas
         Assert.Null(buscar.CapacidadMinima);
         Assert.Null(buscar.PrecioMaximo);
     }
+
+    // ---------- Solicitudes (HU-15) ----------
+
+    [Fact]
+    public void CrearSolicitudRequest_SeLeeDelJsonEnCamelCase_YElPaqueteYComentariosSonOpcionales()
+    {
+        // Actuar
+        var completa = System.Text.Json.JsonSerializer.Deserialize<CrearSolicitudRequest>(
+            "{\"clienteId\":2,\"salonId\":1,\"paqueteId\":9,\"fechaEvento\":\"2026-12-05\",\"tipoEvento\":\"Boda\"," +
+            "\"numeroInvitados\":120,\"telefonoContacto\":\"7731234567\",\"comentarios\":\"En el jardín\"}", OpcionesWeb)!;
+        var minima = System.Text.Json.JsonSerializer.Deserialize<CrearSolicitudRequest>(
+            "{\"clienteId\":2,\"salonId\":1,\"fechaEvento\":\"2026-12-05\",\"tipoEvento\":\"Boda\",\"numeroInvitados\":120,\"telefonoContacto\":\"7731234567\"}", OpcionesWeb)!;
+
+        // Afirmar
+        Assert.Equal((2, 1, 9), (completa.ClienteId, completa.SalonId, completa.PaqueteId));
+        Assert.Equal(new DateTime(2026, 12, 5), completa.FechaEvento);
+        Assert.Equal(("Boda", 120, "7731234567", "En el jardín"),
+            (completa.TipoEvento, completa.NumeroInvitados, completa.TelefonoContacto, completa.Comentarios));
+        Assert.Null(minima.PaqueteId);
+        Assert.Null(minima.Comentarios);
+    }
+
+    [Fact]
+    public void ObtenerYListarSolicitudes_LeenElClienteDelBody()
+    {
+        // Actuar
+        var obtener = System.Text.Json.JsonSerializer.Deserialize<ObtenerSolicitudRequest>("{\"id\":7,\"clienteId\":2}", OpcionesWeb)!;
+        var listar = System.Text.Json.JsonSerializer.Deserialize<ListarSolicitudesRequest>("{\"clienteId\":2}", OpcionesWeb)!;
+
+        // Afirmar: sin pagina ni tamanoPagina, el listado pide la primera página de 10.
+        Assert.Equal((7, 2), (obtener.Id, obtener.ClienteId));
+        Assert.Equal((2, 1, 10), (listar.ClienteId, listar.Pagina, listar.TamanoPagina));
+    }
+
+    [Fact]
+    public void SolicitudResponse_SeSerializaConLosNombresQueUsaElFrontend()
+    {
+        // Arreglar
+        var solicitud = new SolicitudResponse
+        {
+            Id = 7, SalonId = 1, NombreSalon = "Jardin", ClienteId = 2, PaqueteId = 9, NombrePaquete = "Basico",
+            FechaEvento = new DateTime(2026, 12, 5), TipoEvento = "Boda", NumeroInvitados = 120,
+            TelefonoContacto = "7731234567", Comentarios = null, Estado = "pendiente",
+            FechaCreacion = new DateTime(2026, 10, 29, 18, 0, 0),
+        };
+
+        // Actuar
+        var json = System.Text.Json.JsonSerializer.Serialize(solicitud, OpcionesWeb);
+
+        // Afirmar
+        Assert.Equal(
+            "{\"id\":7,\"salonId\":1,\"nombreSalon\":\"Jardin\",\"clienteId\":2,\"paqueteId\":9,\"nombrePaquete\":\"Basico\"," +
+            "\"fechaEvento\":\"2026-12-05T00:00:00\",\"tipoEvento\":\"Boda\",\"numeroInvitados\":120,\"telefonoContacto\":\"7731234567\"," +
+            "\"comentarios\":null,\"estado\":\"pendiente\",\"fechaCreacion\":\"2026-10-29T18:00:00\"}",
+            json);
+    }
 }

@@ -225,4 +225,158 @@ public class ControllersPruebas
         // Afirmar
         Assert.Equal(400, resultado.StatusCode);
     }
+
+    // ---------- Solicitudes (HU-15) ----------
+
+    private static CrearSolicitudRequest SolicitudValida() => new()
+    {
+        ClienteId = 2,
+        SalonId = 1,
+        PaqueteId = 9,
+        FechaEvento = new DateTime(2026, 12, 5),
+        TipoEvento = "Boda",
+        NumeroInvitados = 120,
+        TelefonoContacto = "7731234567",
+    };
+
+    [Fact]
+    public async Task Solicitudes_Crear_DatosValidos_Regresa200ConLaSolicitudPendiente()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        var request = SolicitudValida();
+        repo.Crear(request).Returns(Exito(new SolicitudResponse { Id = 7, SalonId = 1, ClienteId = 2, Estado = "pendiente" }));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Crear(request));
+
+        // Afirmar
+        Assert.Equal(200, resultado.StatusCode);
+        var solicitud = Assert.IsType<RespuestaApi<SolicitudResponse>>(resultado.Value).Datos!;
+        Assert.Equal((7, "pendiente"), (solicitud.Id, solicitud.Estado));
+        await repo.Received(1).Crear(request);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Crear_FechaNoDisponible_Regresa409()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        repo.Crear(Arg.Any<CrearSolicitudRequest>())
+            .Returns(RespuestaApi<SolicitudResponse>.Error(CodigosError.FechaNoDisponible, "La fecha ya no está disponible."));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Crear(SolicitudValida()));
+
+        // Afirmar
+        Assert.Equal(409, resultado.StatusCode);
+        Assert.Equal(CodigosError.FechaNoDisponible, Assert.IsType<RespuestaApi<SolicitudResponse>>(resultado.Value).Codigo);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Crear_PendienteDuplicada_Regresa409()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        repo.Crear(Arg.Any<CrearSolicitudRequest>())
+            .Returns(RespuestaApi<SolicitudResponse>.Error(CodigosError.SolicitudDuplicada, "Ya tienes una solicitud pendiente para ese salón y fecha."));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Crear(SolicitudValida()));
+
+        // Afirmar
+        Assert.Equal(409, resultado.StatusCode);
+        Assert.Equal(CodigosError.SolicitudDuplicada, Assert.IsType<RespuestaApi<SolicitudResponse>>(resultado.Value).Codigo);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Obtener_DeOtroCliente_Regresa403()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        repo.Obtener(Arg.Any<ObtenerSolicitudRequest>())
+            .Returns(RespuestaApi<SolicitudResponse>.Error(CodigosError.SolicitudAjena, "No tienes acceso a esta solicitud."));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Obtener(new ObtenerSolicitudRequest { Id = 7, ClienteId = 3 }));
+
+        // Afirmar
+        Assert.Equal(403, resultado.StatusCode);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Obtener_NoExiste_Regresa404()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        repo.Obtener(Arg.Any<ObtenerSolicitudRequest>())
+            .Returns(RespuestaApi<SolicitudResponse>.Error(CodigosError.SolicitudNoEncontrada, "La solicitud no existe."));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Obtener(new ObtenerSolicitudRequest { Id = 99, ClienteId = 2 }));
+
+        // Afirmar
+        Assert.Equal(404, resultado.StatusCode);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Obtener_Propia_RegresaSuEstadoActual()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        var request = new ObtenerSolicitudRequest { Id = 7, ClienteId = 2 };
+        repo.Obtener(request).Returns(Exito(new SolicitudResponse { Id = 7, ClienteId = 2, NombreSalon = "Jardín", Estado = "confirmada" }));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Obtener(request));
+
+        // Afirmar
+        Assert.Equal(200, resultado.StatusCode);
+        Assert.Equal("confirmada", Assert.IsType<RespuestaApi<SolicitudResponse>>(resultado.Value).Datos!.Estado);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Listar_DelegaAlRepositorioYRegresaElPaginado()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        var request = new ListarSolicitudesRequest { ClienteId = 2, Pagina = 1, TamanoPagina = 10 };
+        repo.Listar(request).Returns(new RespuestaPaginada<SolicitudResponse>
+        {
+            Datos = [new SolicitudResponse { Id = 8, Estado = "pendiente" }, new SolicitudResponse { Id = 7, Estado = "rechazada" }],
+            Pagina = 1,
+            TamanoPagina = 10,
+            TotalRegistros = 2,
+            TotalPaginas = 1,
+        });
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Listar(request));
+
+        // Afirmar
+        Assert.Equal(200, resultado.StatusCode);
+        Assert.Equal(2, Assert.IsType<RespuestaPaginada<SolicitudResponse>>(resultado.Value).TotalRegistros);
+        await repo.Received(1).Listar(request);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Listar_SinSolicitudes_EsExitoConListaVacia()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        repo.Listar(Arg.Any<ListarSolicitudesRequest>()).Returns(new RespuestaPaginada<SolicitudResponse>
+        {
+            Datos = [],
+            Mensaje = "No tienes solicitudes registradas.",
+        });
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Listar(new ListarSolicitudesRequest { ClienteId = 2 }));
+
+        // Afirmar
+        Assert.Equal(200, resultado.StatusCode);
+        var paginado = Assert.IsType<RespuestaPaginada<SolicitudResponse>>(resultado.Value);
+        Assert.Empty(paginado.Datos!);
+        Assert.Equal("No tienes solicitudes registradas.", paginado.Mensaje);
+    }
 }

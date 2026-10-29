@@ -26,3 +26,11 @@ public interface IPaqueteRepositorio
     Task<RespuestaApi<PaqueteResponse>> Actualizar(ActualizarPaqueteRequest request);
     Task<RespuestaApi<int>> Eliminar(EliminarPaqueteRequest request); // Datos = id eliminado
 }
+
+// HU-15: solicitudes de reservación de un cliente.
+public interface ISolicitudRepositorio
+{
+    Task<RespuestaApi<SolicitudResponse>> Crear(CrearSolicitudRequest request);
+    Task<RespuestaApi<SolicitudResponse>> Obtener(ObtenerSolicitudRequest request);
+    Task<RespuestaPaginada<SolicitudResponse>> Listar(ListarSolicitudesRequest request);
+}

@@ -23,6 +23,13 @@ public static class CodigosError
     public const int PaqueteNoEncontrado = 3001;
     public const int UltimoPaquete = 3002;
 
+    // 4xxx: solicitudes de reservación (HU-15)
+    public const int SolicitudNoEncontrada = 4001;
+    public const int FechaNoDisponible = 4002;
+    public const int NoEsCliente = 4003;
+    public const int SolicitudDuplicada = 4004;
+    public const int SolicitudAjena = 4005;
+
     // 5xxx: errores del servidor
     public const int ErrorInterno = 5000;
 }
