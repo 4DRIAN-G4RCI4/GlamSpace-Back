@@ -1,0 +1,15 @@
+# Evidencia 10 — HU-14: listar antes de aplicar (la 005 aparece pendiente)
+# Fecha: 2026-10-29 13:27:03 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 listar
+#
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+⌘ 202610230930: M004_IndiceUnicoBusquedasFavoritas (current)
+202610291000: M005_CrearSolicitudes (not applied)
+Task completed.
+# Código de salida: 0

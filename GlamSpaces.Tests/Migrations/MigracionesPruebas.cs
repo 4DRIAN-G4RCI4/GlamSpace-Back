@@ -25,6 +25,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M002_CrearTablaBusquedasFavoritas), 202610230910)]
     [InlineData(typeof(M003_AgregarColumnaTelefonoSalones), 202610230920)]
     [InlineData(typeof(M004_IndiceUnicoBusquedasFavoritas), 202610230930)]
+    [InlineData(typeof(M005_CrearSolicitudes), 202610291000)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -147,5 +148,69 @@ public class MigracionesPruebas
         // Afirmar
         Assert.Equal("UX_BusquedasFavoritas_Usuario_Salon", borrar.Index.Name);
         Assert.Equal("BusquedasFavoritas", borrar.Index.TableName);
+    }
+
+    [Fact]
+    public void M005_Up_CreaSolicitudesEnCuatroLotesIdempotentes()
+    {
+        // Actuar
+        var sentencias = ExpresionesUp(new M005_CrearSolicitudes())
+            .Cast<ExecuteSqlStatementExpression>()
+            .Select(e => e.SqlStatement)
+            .ToList();
+
+        // Afirmar: tabla, dos CHECK e índice, cada uno protegido para no fallar si ya existe (Azure).
+        Assert.Equal(4, sentencias.Count);
+        Assert.StartsWith("IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL", sentencias[0].Trim());
+        Assert.Contains("IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Invitados')", sentencias[1]);
+        Assert.Contains("IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Estado')", sentencias[2]);
+        Assert.Contains("IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente'", sentencias[3]);
+        Assert.DoesNotContain(sentencias, s => s.Contains("\nGO"));
+    }
+
+    [Fact]
+    public void M005_Up_DefineLasColumnasYLlavesDeLaHu14()
+    {
+        // Actuar
+        var tabla = ExpresionesUp(new M005_CrearSolicitudes()).Cast<ExecuteSqlStatementExpression>().First().SqlStatement;
+
+        // Afirmar
+        Assert.Contains("CREATE TABLE dbo.Solicitudes", tabla);
+        Assert.Contains("Id              INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Solicitudes PRIMARY KEY", tabla);
+        Assert.Contains("SalonId         INT           NOT NULL CONSTRAINT FK_Solicitudes_Salones  REFERENCES dbo.Salones(Id)", tabla);
+        Assert.Contains("ClienteId       INT           NOT NULL CONSTRAINT FK_Solicitudes_Usuarios REFERENCES dbo.Usuarios(Id)", tabla);
+        Assert.Contains("PaqueteId       INT           NULL     CONSTRAINT FK_Solicitudes_Paquetes REFERENCES dbo.Paquetes(Id)", tabla);
+        Assert.Contains("FechaEvento     DATE          NOT NULL", tabla);
+        Assert.Contains("TipoEvento      NVARCHAR(100) NOT NULL", tabla);
+        Assert.Contains("NumeroInvitados INT           NOT NULL", tabla);
+        Assert.Contains("Comentarios     NVARCHAR(500) NULL", tabla);
+        Assert.Contains("Estado          NVARCHAR(20)  NOT NULL CONSTRAINT DF_Solicitudes_Estado DEFAULT 'pendiente'", tabla);
+        Assert.Contains("FechaCreacion   DATETIME2(7)  NOT NULL CONSTRAINT DF_Solicitudes_FechaCreacion DEFAULT SYSUTCDATETIME()", tabla);
+    }
+
+    [Fact]
+    public void M005_Up_AgregaLosChecksYElIndiceUnicoFiltradoDePendientes()
+    {
+        // Actuar
+        var sentencias = ExpresionesUp(new M005_CrearSolicitudes()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+
+        // Afirmar
+        Assert.Contains("ADD CONSTRAINT CK_Solicitudes_Invitados CHECK (NumeroInvitados > 0)", sentencias[1]);
+        Assert.Contains("ADD CONSTRAINT CK_Solicitudes_Estado CHECK (Estado IN ('pendiente', 'confirmada', 'rechazada'))", sentencias[2]);
+        Assert.Contains("SET QUOTED_IDENTIFIER ON;", sentencias[3]);
+        Assert.Contains("CREATE UNIQUE NONCLUSTERED INDEX UX_Solicitudes_Cliente_Salon_Fecha_Pendiente", sentencias[3]);
+        Assert.Contains("ON dbo.Solicitudes (ClienteId, SalonId, FechaEvento)", sentencias[3]);
+        Assert.Contains("WHERE Estado = 'pendiente';", sentencias[3]);
+    }
+
+    [Fact]
+    public void M005_Down_BorraLaTablaSolicitudes()
+    {
+        // Actuar
+        var borrar = Assert.Single(ExpresionesDown(new M005_CrearSolicitudes()).OfType<DeleteTableExpression>());
+
+        // Afirmar
+        Assert.Equal("Solicitudes", borrar.TableName);
+        Assert.Equal("DROP TABLE [dbo].[Solicitudes]", Generador.Generate(borrar).Trim().TrimEnd(';'));
     }
 }
