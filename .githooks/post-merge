@@ -1,0 +1,29 @@
+#!/bin/sh
+# Se ejecuta después de cada "git pull" o "git merge" (activar una vez por clon con:
+#   git config core.hooksPath .githooks
+# ). Avisa qué hay que actualizar según memoria/REGLAS.md. No modifica nada.
+
+cambios=$(git diff --name-only ORIG_HEAD HEAD 2>/dev/null)
+[ -z "$cambios" ] && exit 0
+
+bd=$(echo "$cambios" | grep -E '^(Database/|GlamSpaces\.Migrations/Migraciones/)')
+memoria=$(echo "$cambios" | grep -E '^memoria/')
+
+echo ""
+echo "=== GlamSpaces · llegaron cambios (memoria/REGLAS.md) ==="
+if [ -n "$bd" ]; then
+  echo "Cambió la base de datos:"
+  echo "$bd" | sed 's/^/  - /'
+  echo "Haz esto en tu máquina:"
+  echo "  1. .\\scripts\\migraciones.ps1 subir             (aplica las migraciones nuevas en tu LocalDB)"
+  echo "  2. .\\scripts\\generar-bd-completa.ps1           (debe dejar memoria/bd sin cambios)"
+  echo "  3. Si te toca a ti un cambio de BD, sigue la regla 2 de memoria/REGLAS.md."
+fi
+if [ -n "$memoria" ]; then
+  echo "Se actualizó la memoria del proyecto: lee memoria/MEMORIA.md y el sprint actual en memoria/sprint/."
+fi
+if [ -z "$bd" ] && [ -z "$memoria" ]; then
+  echo "Sin cambios de BD. Al terminar tu HU, registra lo hecho en memoria/sprint/ (regla 3)."
+fi
+echo ""
+exit 0

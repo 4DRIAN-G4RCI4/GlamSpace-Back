@@ -1,0 +1,3 @@
+# El hook se ejecuta con sh y el script completo se compara en el workflow (Linux): siempre LF.
+.githooks/* text eol=lf
+memoria/bd/*.sql text eol=lf
