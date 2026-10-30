@@ -21,6 +21,15 @@ Plataforma para encontrar y reservar salones de eventos.
 | Sprint 4 | HU-11, HU-12: tabla de reservaciones · detalle y disponibilidad del salón | 🚧 En desarrollo |
 | Sprint 5 | HU-14, HU-16: tabla de solicitudes y teléfono de contacto · [HU-15: crear y consultar solicitudes](#sprint-5--solicitudes-hu-15) | 🚧 En desarrollo |
 
+## Memoria y reglas del proyecto
+
+- [`memoria/MEMORIA.md`](memoria/MEMORIA.md): contexto y estado vigente (tablas, migraciones, endpoints, códigos, pendientes, bitácora).
+- [`memoria/sprint/`](memoria/sprint/): qué se hizo en cada sprint (`sprint1.md` … `sprint5.md`).
+- [`memoria/bd/GlamSpaces_BD_Completa.sql`](memoria/bd/GlamSpaces_BD_Completa.sql): script completo y vigente de la BD,
+  generado con `.\scripts\generar-bd-completa.ps1` (no se edita a mano).
+- [`memoria/REGLAS.md`](memoria/REGLAS.md): qué actualizar en cada cambio de BD, al terminar una HU y al hacer `git pull`.
+  Activa el aviso automático una vez por clon: `git config core.hooksPath .githooks`.
+
 ## Cómo correrla
 
 1. Correr en la BD, en orden:
