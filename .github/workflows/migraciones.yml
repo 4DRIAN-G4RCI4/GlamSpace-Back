@@ -55,6 +55,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # Regla de memoria/REGLAS.md: el script completo de la BD se genera desde Database/
+      # y debe subirse actualizado junto con cualquier cambio de esquema.
+      - name: Verificar que memoria/bd/GlamSpaces_BD_Completa.sql está al día
+        shell: pwsh
+        run: |
+          ./scripts/generar-bd-completa.ps1
+          git diff --exit-code -- memoria/bd
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::memoria/bd/GlamSpaces_BD_Completa.sql no está al día: corre .\scripts\generar-bd-completa.ps1 y sube el resultado."
+            exit 1
+          }
+
       - name: Instalar .NET 9
         uses: actions/setup-dotnet@v4
         with:
@@ -146,3 +158,18 @@ jobs:
           docker exec ${{ job.services.sqlserver.id }}
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
           -Q "IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL THROW 50000, 'La reaplicación no agregó TelefonoContacto.', 1; IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL THROW 50000, 'Falta la tabla Solicitudes.', 1; IF (SELECT COUNT(*) FROM sys.check_constraints WHERE name IN ('CK_Solicitudes_Invitados', 'CK_Solicitudes_Estado')) <> 2 THROW 50000, 'Faltan restricciones CHECK de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente' AND is_unique = 1 AND has_filter = 1) THROW 50000, 'Falta el índice único filtrado de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'Falta el índice de la 004.', 1; IF OBJECT_ID(N'dbo.sp_Solicitud_Crear', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_Solicitud_Obtener', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_Solicitud_ListarPorCliente', N'P') IS NULL THROW 50000, 'La reaplicación de la 007 no creó los SP de solicitudes.', 1; PRINT 'OK: TelefonoContacto volvió; Solicitudes con sus 2 CHECK y su índice único filtrado; los 3 SP de solicitudes (sp_Solicitud_Crear, sp_Solicitud_Obtener, sp_Solicitud_ListarPorCliente) existen.'; SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version;"
+
+      # El script completo de memoria/bd debe dejar el mismo esquema en una BD vacía, y ser idempotente.
+      - name: Script completo de la BD (memoria/bd) dos veces sobre una BD vacía
+        run: |
+          docker cp memoria/bd/GlamSpaces_BD_Completa.sql ${{ job.services.sqlserver.id }}:/tmp/GlamSpaces_BD_Completa.sql
+          docker exec ${{ job.services.sqlserver.id }} \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -Q "CREATE DATABASE GlamSpacesBDCompleta"
+          for vez in 1 2; do
+            docker exec ${{ job.services.sqlserver.id }} \
+              /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesBDCompleta \
+              -i /tmp/GlamSpaces_BD_Completa.sql > /dev/null
+          done
+          docker exec ${{ job.services.sqlserver.id }} \
+            /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesBDCompleta \
+            -Q "IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL OR COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL OR OBJECT_ID(N'dbo.sp_Solicitud_Crear', N'P') IS NULL THROW 50000, 'El script completo no dejó el esquema vigente.', 1; PRINT 'OK: el script completo crea el esquema vigente y es idempotente.';"
