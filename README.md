@@ -20,7 +20,7 @@ Plataforma para encontrar y reservar salones de eventos.
 | Sprint 3 | HU-08: índices · HU-09: búsqueda y filtrado | ✅ En producción |
 | Sprint 4 | HU-11, HU-12: tabla de reservaciones · detalle y disponibilidad del salón | 🚧 En desarrollo |
 | Sprint 5 | HU-14, HU-16: tabla de solicitudes y teléfono de contacto · [HU-15: crear y consultar solicitudes](#sprint-5--solicitudes-hu-15) | 🚧 En desarrollo |
-| Sprint 6 | [HU-17: estado de solicitud y bloqueo de fecha](#sprint-6--estado-de-solicitud-y-bloqueo-de-fecha-hu-17) | 🚧 En desarrollo |
+| Sprint 6 | [HU-17: estado de solicitud y bloqueo de fecha](#sprint-6--estado-de-solicitud-y-bloqueo-de-fecha-hu-17) · [HU-18: aceptar, rechazar y listar solicitudes](#sprint-6--endpoints-del-administrador-para-solicitudes-hu-18) | 🚧 En desarrollo |
 
 ## Cómo correrla
 
@@ -341,6 +341,9 @@ Ya no hay parámetros en la URL: todo va en el body.
 | `/api/solicitudes/crear` | `{ clienteId, salonId, paqueteId?, fechaEvento, tipoEvento, numeroInvitados, telefonoContacto, comentarios? }` | Solicitud ([Sprint 5](#sprint-5--solicitudes-hu-15)) |
 | `/api/solicitudes/obtener` | `{ id, clienteId }` | Solicitud |
 | `/api/solicitudes/listar` | `{ clienteId, pagina, tamanoPagina }` | Listado paginado de solicitudes |
+| `/api/solicitudes/listarPorSalon` | `{ salonId, adminId, estado?, pagina, tamanoPagina }` | Solicitudes del salón por fecha del evento ([Sprint 6](#sprint-6--endpoints-del-administrador-para-solicitudes-hu-18)) |
+| `/api/solicitudes/aceptar` | `{ id, adminId }` | Solicitud confirmada + `solicitudesRechazadas` |
+| `/api/solicitudes/rechazar` | `{ id, adminId }` | Solicitud rechazada |
 
 Notas:
 - En `actualizar`, si `descripcion` no se manda, se borra; si `estado` no se manda, se conserva el actual.
@@ -817,4 +820,64 @@ muestra la fecha ocupada de inmediato.
 Correr `Database/09_EstadoSolicitudesHU17.sql` en `glamspaces-db` (idempotente) o aplicar la migración `M008`.
 Si ya hubiera dos solicitudes confirmadas del mismo salón y fecha, el script se detiene con `THROW 50010`
 antes de crear el índice. **No** correr `10_PruebasHU17.sql` en producción.
+
+---
+
+## Sprint 6 — Endpoints del administrador para solicitudes (HU-18)
+
+El administrador del salón lista las solicitudes que recibe y las acepta o rechaza. Aceptar usa la
+lógica de la HU-17: bloquea la fecha y rechaza las demás pendientes de ese salón y día.
+Lo consume el panel de administrador del front (HU-19).
+
+| Pieza | Dónde |
+|---|---|
+| `sp_Solicitud_ListarPorSalon` | Migración `M009_SolicitudesAdminHU18` = `Database/11_SolicitudesAdminHU18.sql` |
+| Aceptar / rechazar | `sp_Solicitud_CambiarEstado` de la HU-17 (M008), con `@Estado` = `confirmada` / `rechazada` |
+| Endpoints | `SolicitudesController`: `aceptar`, `rechazar`, `listarPorSalon` |
+| DTOs | `AtenderSolicitudRequest`, `ListarSolicitudesSalonRequest`, `SolicitudAdminResponse`, `SolicitudAtendidaResponse` |
+
+### `POST /api/solicitudes/listarPorSalon`
+
+```json
+{ "salonId": 2, "adminId": 7, "estado": "pendiente", "pagina": 1, "tamanoPagina": 10 }
+```
+
+- `estado` es opcional: `pendiente` (por defecto), `confirmada`, `rechazada` o `todas`.
+- Las solicitudes vienen ordenadas por **fecha del evento**, las más próximas primero. Cada una trae
+  además `nombreCliente` y `precioPaquete`.
+- Errores: `1004` si no es administrador, `2001` si el salón no existe, **`2002` (403)** si el salón no es suyo y
+  `1001` si el estado es inválido.
+
+### `POST /api/solicitudes/aceptar` y `/rechazar`
+
+```json
+{ "id": 10, "adminId": 7 }
+```
+
+Regresan la solicitud con su nuevo `estado` y `solicitudesRechazadas`: cuántas pendientes del mismo día
+se rechazaron solas al aceptar (al rechazar siempre es 0). Errores:
+
+| Código | HTTP | Caso |
+|---|---|---|
+| 2002 | 403 | La solicitud no es de un salón de ese administrador |
+| 4006 | 409 | La solicitud ya fue atendida |
+| 4002 | 409 | Al aceptar, la fecha ya está ocupada |
+| 4001 | 404 | La solicitud no existe |
+
+### Criterios de aceptación (verificados por HTTP contra la API local y LocalDB: `docs/evidencias/31_hu18_api_criterios.txt`)
+
+| # | Dado que / Cuando | Entonces |
+|---|---|---|
+| 1 | El administrador acepta una pendiente | `confirmada` y la fecha aparece ocupada en `/salones/disponibilidad` |
+| 2 | El administrador rechaza una solicitud | `rechazada` y la fecha sigue disponible |
+| 3 | El administrador pide las solicitudes de su salón | Pendientes ordenadas por fecha del evento |
+| 4 | Otro administrador intenta aceptar | `2002` → HTTP 403 |
+
+Pruebas unitarias: controller (los 4 criterios y el `4006`) y repositorio con `Apoyo/ConexionFalsa`
+(Dapper real sin BD: revisa el SP y los parámetros que se mandan). En total, 129 pruebas en verde.
+
+### Para desplegar
+
+Correr `Database/11_SolicitudesAdminHU18.sql` en `glamspaces-db` (idempotente) o aplicar la migración `M009`.
+Requiere que ya esté la HU-17 (`09_EstadoSolicitudesHU17.sql`).
 
