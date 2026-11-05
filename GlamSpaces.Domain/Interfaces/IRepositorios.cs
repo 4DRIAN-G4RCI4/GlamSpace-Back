@@ -27,10 +27,13 @@ public interface IPaqueteRepositorio
     Task<RespuestaApi<int>> Eliminar(EliminarPaqueteRequest request); // Datos = id eliminado
 }
 
-// HU-15: solicitudes de reservación de un cliente.
+// HU-15: solicitudes de reservación de un cliente. HU-18: el administrador las atiende.
 public interface ISolicitudRepositorio
 {
     Task<RespuestaApi<SolicitudResponse>> Crear(CrearSolicitudRequest request);
     Task<RespuestaApi<SolicitudResponse>> Obtener(ObtenerSolicitudRequest request);
     Task<RespuestaPaginada<SolicitudResponse>> Listar(ListarSolicitudesRequest request);
+    Task<RespuestaApi<SolicitudAtendidaResponse>> Aceptar(AtenderSolicitudRequest request);
+    Task<RespuestaApi<SolicitudAtendidaResponse>> Rechazar(AtenderSolicitudRequest request);
+    Task<RespuestaPaginada<SolicitudAdminResponse>> ListarPorSalon(ListarSolicitudesSalonRequest request);
 }
