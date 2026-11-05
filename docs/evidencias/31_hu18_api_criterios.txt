@@ -1,0 +1,58 @@
+# Evidencia 31 — HU-18: criterios de aceptación por HTTP contra la API local y LocalDB
+# Fecha: 2026-11-05 14:27:02 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: curl -X POST http://localhost:5080/api/... (ver cada llamada)
+#
+API local (http://localhost:5080) contra LocalDB. Admin dueño = 7, otro admin = 11, salón = 2.
+Pendientes iniciales: 13 (5-dic), 10 y 11 (12-dic, misma fecha), 12 (19-dic).
+
+=== CA3: el administrador pide las solicitudes de su salón → pendientes ordenadas por fecha del evento
+
+>>> POST /solicitudes/listarPorSalon  {"salonId":2,"adminId":7,"pagina":1,"tamanoPagina":10}
+{ "pagina": 1, "tamanoPagina": 10, "totalRegistros": 4, "totalPaginas": 1, "codigo": 0, "mensaje": "Consulta exitosa.", "datos": [ { "id": 13, "nombreCliente": "Roberto Sánchez Islas", "fechaEvento": "2026-12-05", "estado": "pendiente", "nombrePaquete": "Paquete 8500", "precioPaquete": 8500 }, { "id": 10, "nombreCliente": "María López García", "fechaEvento": "2026-12-12", "estado": "pendiente", "nombrePaquete": "Paquete 15000", "precioPaquete": 15000 }, { "id": 11, "nombreCliente": "Roberto Sánchez Islas", "fechaEvento": "2026-12-12", "estado": "pendiente", "nombrePaquete": "Paquete 8500", "precioPaquete": 8500 }, { "id": 12, "nombreCliente": "Daniela Ortiz Fuentes", "fechaEvento": "2026-12-19", "estado": "pendiente", "nombrePaquete": "Paquete 15000", "precioPaquete": 15000 } ], "exito": true }
+<<< HTTP 200
+
+=== CA4: otro administrador intenta aceptar una solicitud que no es de su salón → error de autorización
+
+>>> POST /solicitudes/aceptar  {"id":10,"adminId":11}
+{ "codigo": 2002, "mensaje": "No eres el dueño del salón de esta solicitud.", "datos": null, "exito": false }
+<<< HTTP 403
+
+>>> POST /solicitudes/listarPorSalon  {"salonId":2,"adminId":11}
+{ "pagina": 1, "tamanoPagina": 10, "totalRegistros": 0, "totalPaginas": 0, "codigo": 2002, "mensaje": "No eres el dueño de este salón.", "datos": [], "exito": false }
+<<< HTTP 403
+
+=== CA1: el dueño acepta la 10 → confirmada; la 11 (misma fecha) se rechaza sola y la fecha queda bloqueada
+
+>>> POST /solicitudes/aceptar  {"id":10,"adminId":7}
+{ "codigo": 0, "mensaje": "Solicitud confirmada. Se rechazaron 1 solicitud(es) pendiente(s) de esa fecha.", "datos": { "solicitudesRechazadas": 1, "id": 10, "salonId": 2, "nombreSalon": "[Prueba] Jardín Encanto", "clienteId": 8, "paqueteId": 5, "nombrePaquete": "Paquete 15000", "fechaEvento": "2026-12-12T00:00:00", "tipoEvento": "Boda", "numeroInvitados": 120, "telefonoContacto": "7731234567", "comentarios": null, "estado": "confirmada", "fechaCreacion": "2026-11-05T20:26:37.9623629" }, "exito": true }
+<<< HTTP 200
+
+>>> POST /salones/disponibilidad  {"salonId":2,"anio":2026,"mes":12}
+{ "codigo": 0, "mensaje": "Consulta exitosa.", "datos": { "salonId": 2, "anio": 2026, "mes": 12, "fechasOcupadas": [ "2026-12-12" ] }, "exito": true }
+<<< HTTP 200
+
+=== CA2: el dueño rechaza la 12 → rechazada y el 19-dic sigue disponible
+
+>>> POST /solicitudes/rechazar  {"id":12,"adminId":7}
+{ "codigo": 0, "mensaje": "Solicitud rechazada.", "datos": { "solicitudesRechazadas": 0, "id": 12, "salonId": 2, "nombreSalon": "[Prueba] Jardín Encanto", "clienteId": 10, "paqueteId": 5, "nombrePaquete": "Paquete 15000", "fechaEvento": "2026-12-19T00:00:00", "tipoEvento": "Graduación", "numeroInvitados": 150, "telefonoContacto": "7731234567", "comentarios": null, "estado": "rechazada", "fechaCreacion": "2026-11-05T20:26:37.9623629" }, "exito": true }
+<<< HTTP 200
+
+>>> POST /salones/disponibilidad  {"salonId":2,"anio":2026,"mes":12}
+{ "codigo": 0, "mensaje": "Consulta exitosa.", "datos": { "salonId": 2, "anio": 2026, "mes": 12, "fechasOcupadas": [ "2026-12-12" ] }, "exito": true }
+<<< HTTP 200
+
+=== Extra: aceptar una ya atendida → 4006 (409); y el listado de pendientes ya solo trae la 13
+
+>>> POST /solicitudes/aceptar  {"id":11,"adminId":7}
+{ "codigo": 4006, "mensaje": "La solicitud ya fue atendida.", "datos": null, "exito": false }
+<<< HTTP 409
+
+>>> POST /solicitudes/listarPorSalon  {"salonId":2,"adminId":7}
+{ "pagina": 1, "tamanoPagina": 10, "totalRegistros": 1, "totalPaginas": 1, "codigo": 0, "mensaje": "Consulta exitosa.", "datos": [ { "id": 13, "nombreCliente": "Roberto Sánchez Islas", "fechaEvento": "2026-12-05", "estado": "pendiente", "nombrePaquete": "Paquete 8500", "precioPaquete": 8500 } ], "exito": true }
+<<< HTTP 200
+
+>>> POST /solicitudes/listarPorSalon  {"salonId":2,"adminId":7,"estado":"todas"}
+{ "pagina": 1, "tamanoPagina": 10, "totalRegistros": 4, "totalPaginas": 1, "codigo": 0, "mensaje": "Consulta exitosa.", "datos": [ { "id": 13, "nombreCliente": "Roberto Sánchez Islas", "fechaEvento": "2026-12-05", "estado": "pendiente", "nombrePaquete": "Paquete 8500", "precioPaquete": 8500 }, { "id": 10, "nombreCliente": "María López García", "fechaEvento": "2026-12-12", "estado": "confirmada", "nombrePaquete": "Paquete 15000", "precioPaquete": 15000 }, { "id": 11, "nombreCliente": "Roberto Sánchez Islas", "fechaEvento": "2026-12-12", "estado": "rechazada", "nombrePaquete": "Paquete 8500", "precioPaquete": 8500 }, { "id": 12, "nombreCliente": "Daniela Ortiz Fuentes", "fechaEvento": "2026-12-19", "estado": "rechazada", "nombrePaquete": "Paquete 15000", "precioPaquete": 15000 } ], "exito": true }
+<<< HTTP 200
+# Código de salida: 0
