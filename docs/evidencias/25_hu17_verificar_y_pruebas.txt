@@ -1,0 +1,76 @@
+# Evidencia 25 — HU-17: estructura y pruebas de los criterios de aceptación (10_PruebasHU17.sql)
+# Fecha: 2026-11-05 14:10:04 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> Estructura
+
+Indice                                       Unico Filtro                  Columnas                       
+------                                       ----- ------                  --------                       
+UX_Solicitudes_Cliente_Salon_Fecha_Pendiente  True ([Estado]='pendiente')  ClienteId, SalonId, FechaEvento
+UX_Solicitudes_Confirmada                     True ([Estado]='confirmada') SalonId, FechaEvento
+(2 filas)
+
+StoredProcedure            Modificado          CambioHU17                 
+---------------            ----------          ----------                 
+sp_Salon_Disponibilidad    2026-11-05 14:09:33 lee Solicitudes confirmadas
+sp_Solicitud_CambiarEstado 2026-11-05 14:09:33                            
+sp_Solicitud_Crear         2026-11-05 14:09:33 revisa Reservaciones
+(3 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+202610291100 HU-16: columna TelefonoContacto en Solicitudes                         
+202610291200 HU-15: stored procedures de solicitudes                                
+202611051000 HU-17: confirmar o rechazar solicitudes y bloqueo de fecha
+(8 filas)
+
+>>> Pruebas de los criterios: .\scripts\migraciones.ps1 script -Archivo Database\10_PruebasHU17.sql
+Ejecutando Database\10_PruebasHU17.sql en [GlamSpacesMigraciones]
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 3       2 [PruebaHU17] Salón         9                         01/06/2030 12:00:00 a. m. Boda                   100 7710000001
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 5       2 [PruebaHU17] Salón        11                         08/06/2030 12:00:00 a. m. Cumpleaños              40 7710000003
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 6       2 [PruebaHU17] Salón        12                         08/06/2030 12:00:00 a. m. Graduación              60 7710000004
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 9       2 [PruebaHU17] Salón        11                         15/06/2030 12:00:00 a. m. Evento                  50 7710000009
+(1 filas)
+HU-17: 16 de 16 pruebas pasan. Datos de prueba borrados.
+
+ N Prueba                                                          Esperado                                 Obtenido                                                                         Resultado
+ - ------                                                          --------                                 --------                                                                         ---------
+ 1 CA1 · confirmar una de dos pendientes (código)                  0                                        0 Solicitud confirmada. Se rechazaron 1 solicitud(es) pendiente(s) de esa fecha. PASA     
+ 2 CA1 · la confirmada                                             confirmada                               confirmada                                                                       PASA     
+ 3 CA1 · la otra cambia sola                                       rechazada                                rechazada                                                                        PASA     
+ 4 CA2 · fecha confirmada en la disponibilidad                     2030-06-01                               2030-06-01                                                                       PASA     
+ 5 CA2 · crear otra solicitud en la fecha ocupada                  4002                                     4002 La fecha ya no está disponible.                                             PASA     
+ 6 CA3 · la solicitud rechazada                                    rechazada                                rechazada                                                                        PASA     
+ 7 CA3 · la fecha NO aparece ocupada                               sin 2030-06-08                           2030-06-01                                                                       PASA     
+ 8 CA3 · otro cliente aún puede pedir esa fecha                    0                                        0 Solicitud enviada correctamente.                                               PASA     
+ 9 CA4 · 4 solicitudes de la misma fecha, se confirma 1            1 confirmada (la elegida) y 3 rechazadas 1 confirmada(s), 3 rechazada(s), 0 pendiente(s)                                  PASA     
+10 CA4 · mensaje con las rechazadas                                ...Se rechazaron 3...                    Solicitud confirmada. Se rechazaron 3 solicitud(es) pendiente(s) de esa fecha.   PASA     
+11 Regla · 2a confirmada directa en BD (UX_Solicitudes_Confirmada) error 2601                               error 2601                                                                       PASA     
+12 Error · confirmar una solicitud ya atendida                     4006                                     4006 La solicitud ya fue atendida.                                               PASA     
+13 Error · otro administrador no puede confirmar                   2002                                     2002 No eres el dueño del salón de esta solicitud.                               PASA     
+14 Error · estado inválido                                         1001                                     1001 El estado debe ser "confirmada" o "rechazada".                              PASA     
+15 Consistencia · confirmar si hay reservación confirmada (HU-11)  4002 y sigue pendiente                   4002 · pendiente                                                                 PASA     
+16 Consistencia · crear solicitud si hay reservación confirmada    4002                                     4002 La fecha ya no está disponible.                                             PASA
+(16 filas)
+# Código de salida: 0

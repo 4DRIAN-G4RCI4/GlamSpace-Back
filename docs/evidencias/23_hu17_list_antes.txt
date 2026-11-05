@@ -1,0 +1,18 @@
+# Evidencia 23 — HU-17: listar (la 008 aparece pendiente)
+# Fecha: 2026-11-05 14:09:27 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 listar
+#
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+202610291000: M005_CrearSolicitudes
+⌘ 202610291100: M006_AgregarTelefonoContactoSolicitudes (current)
+202610291200: M007_ProcedimientosSolicitudes (not applied)
+202611051000: M008_EstadoSolicitudesHU17 (not applied)
+Task completed.
+# Código de salida: 0

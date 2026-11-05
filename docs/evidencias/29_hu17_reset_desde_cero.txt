@@ -1,0 +1,1250 @@
+# Evidencia 29 — HU-17: reset limpio, 001 a 008 desde cero y pruebas
+# Fecha: 2026-11-05 14:10:38 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> .\scripts\migraciones.ps1 reset
+Borrando y recreando [GlamSpacesMigraciones] en (localdb)\MSSQLLocalDB
+Base de datos [GlamSpacesMigraciones] creada vacía.
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+VersionMigration migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+CreateTable VersionInfo
+Committing Transaction
+VersionMigration migrated
+-------------------------------------------------------------------------------
+VersionUniqueMigration migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+CreateIndex VersionInfo (Version)
+AlterTable VersionInfo
+CreateColumn VersionInfo AppliedOn DateTime
+Committing Transaction
+VersionUniqueMigration migrated
+-------------------------------------------------------------------------------
+VersionDescriptionMigration migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+AlterTable VersionInfo
+CreateColumn VersionInfo Description String
+Committing Transaction
+VersionDescriptionMigration migrated
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF OBJECT_ID(N'dbo.Usuarios', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Usuarios (
+        Id             INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Usuarios PRIMARY KEY,
+        NombreCompleto NVARCHAR(150) NOT NULL,
+        Correo         NVARCHAR(150) NOT NULL,
+        PasswordHash   NVARCHAR(MAX) NOT NULL,
+        TipoCuenta     NVARCHAR(20)  NOT NULL,
+        NombreSalon    NVARCHAR(150) NULL,
+        FechaRegistro  DATETIME2     NOT NULL
+    );
+    CREATE UNIQUE INDEX IX_Usuarios_Correo ON dbo.Usuarios (Correo);
+END
+ExecuteSqlStatement /* =========================================================================
+   GlamSpaces — Tablas (glamspaces-db, Azure SQL)
+   Idempotente: se puede volver a correr sin romper nada si ya existen.
+   Correr ANTES de 02_StoredProcedures.sql.
+   ========================================================================= */
+
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Usuarios')
+BEGIN
+    CREATE TABLE Usuarios (
+        Id              INT IDENTITY(1,1) PRIMARY KEY,
+        NombreCompleto  NVARCHAR(150) NOT NULL,
+        Correo          NVARCHAR(150) NOT NULL UNIQUE,
+        PasswordHash    NVARCHAR(MAX) NOT NULL,
+        TipoCuenta      NVARCHAR(20) NOT NULL,   -- 'cliente' o 'administrador'
+        NombreSalon     NVARCHAR(150) NULL,      -- solo si TipoCuenta = 'administrador'
+        FechaRegistro   DATETIME2 NOT NULL DEFAULT GETDATE()
+    );
+END
+ExecuteSqlStatement IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Salones')
+BEGIN
+    CREATE TABLE Salones (
+        Id            INT IDENTITY(1,1) PRIMARY KEY,
+        AdminId       INT NOT NULL,
+        Nombre        NVARCHAR(150) NOT NULL,
+        Zona          NVARCHAR(200) NOT NULL,
+        Capacidad     INT NOT NULL,
+        Descripcion   NVARCHAR(1000) NULL,
+        Estado        NVARCHAR(20) NOT NULL DEFAULT 'no_publicado',
+        FechaCreacion DATETIME2 NOT NULL DEFAULT GETDATE(),
+        CONSTRAINT FK_Salones_Usuarios FOREIGN KEY (AdminId) REFERENCES Usuarios(Id),
+        CONSTRAINT CK_Salones_Capacidad CHECK (Capacidad > 0),
+        CONSTRAINT CK_Salones_Estado CHECK (Estado IN ('publicado', 'no_publicado'))
+    );
+END
+ExecuteSqlStatement IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Paquetes')
+BEGIN
+    CREATE TABLE Paquetes (
+        Id              INT IDENTITY(1,1) PRIMARY KEY,
+        SalonId         INT NOT NULL,
+        NombrePaquete   NVARCHAR(150) NOT NULL,
+        Descripcion     NVARCHAR(500) NULL,
+        Precio          DECIMAL(10,2) NOT NULL,
+        CONSTRAINT FK_Paquetes_Salones FOREIGN KEY (SalonId) REFERENCES Salones(Id),
+        CONSTRAINT CK_Paquetes_Precio CHECK (Precio > 0)
+    );
+END
+ExecuteSqlStatement IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'FotosSalon')
+BEGIN
+    CREATE TABLE FotosSalon (
+        Id      INT IDENTITY(1,1) PRIMARY KEY,
+        SalonId INT NOT NULL,
+        Url     NVARCHAR(500) NOT NULL,
+        CONSTRAINT FK_FotosSalon_Salones FOREIGN KEY (SalonId) REFERENCES Salones(Id)
+    );
+END
+ExecuteSqlStatement -- Sprint 4 — HU-11. Solo las reservaciones 'confirmada' ocupan la fecha del salón (HU-12).
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'Reservaciones')
+BEGIN
+    CREATE TABLE Reservaciones (
+        Id            INT IDENTITY(1,1) PRIMARY KEY,
+        SalonId       INT NOT NULL,
+        ClienteId     INT NOT NULL,
+        PaqueteId     INT NULL,
+        FechaEvento   DATE NOT NULL,
+        Estado        NVARCHAR(20) NOT NULL DEFAULT 'pendiente',
+        FechaCreacion DATETIME2 NOT NULL DEFAULT GETDATE(),
+        CONSTRAINT FK_Reservaciones_Salones FOREIGN KEY (SalonId) REFERENCES Salones(Id),
+        CONSTRAINT FK_Reservaciones_Usuarios FOREIGN KEY (ClienteId) REFERENCES Usuarios(Id),
+        CONSTRAINT FK_Reservaciones_Paquetes FOREIGN KEY (PaqueteId) REFERENCES Paquetes(Id),
+        CONSTRAINT CK_Reservaciones_Estado CHECK (Estado IN ('pendiente', 'confirmada', 'cancelada'))
+    );
+END
+ExecuteSqlStatement /* =========================================================================
+   GlamSpaces — Stored procedures (glamspaces-db, Azure SQL)
+   Correr DESPUÉS de 01_Tablas.sql. Idempotente (CREATE OR ALTER).
+
+   Convención de todos los SP:
+     - Reciben @Codigo INT OUTPUT y @Mensaje NVARCHAR(200) OUTPUT.
+     - @Codigo = 0 es éxito; los demás números son los de
+       GlamSpaces.Domain/Comun/CodigosError.cs.
+     - Si hay error, hacen RETURN sin regresar result sets.
+   ========================================================================= */
+
+-- Los SP guardan estas opciones al crearse. Deben estar en ON porque Salones tiene
+-- índices filtrados (03_Indices.sql); con OFF, los INSERT/UPDATE de los SP fallarían.
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+ExecuteSqlStatement -- =========================================================================
+-- USUARIOS
+-- =========================================================================
+
+-- La API manda la contraseña ya hasheada (PBKDF2); el SP nunca ve el texto plano.
+CREATE OR ALTER PROCEDURE sp_Usuario_Registrar
+    @NombreCompleto NVARCHAR(150),
+    @Correo         NVARCHAR(150),
+    @PasswordHash   NVARCHAR(MAX),
+    @TipoCuenta     NVARCHAR(20),
+    @NombreSalon    NVARCHAR(150) = NULL,
+    @Codigo         INT OUTPUT,
+    @Mensaje        NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @NombreCompleto = TRIM(@NombreCompleto);
+    SET @Correo = LOWER(TRIM(@Correo));
+    SET @TipoCuenta = LOWER(TRIM(@TipoCuenta));
+    SET @NombreSalon = NULLIF(TRIM(@NombreSalon), '');
+
+    IF ISNULL(@NombreCompleto, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Escribe tu nombre completo.'; RETURN; END
+
+    IF ISNULL(@Correo, '') NOT LIKE '_%@_%._%'
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El formato del correo no es válido.'; RETURN; END
+
+    IF ISNULL(@TipoCuenta, '') NOT IN ('cliente', 'administrador')
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de cuenta debe ser "cliente" o "administrador".'; RETURN; END
+
+    IF @TipoCuenta = 'administrador' AND @NombreSalon IS NULL
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Escribe el nombre de tu salón.'; RETURN; END
+
+    IF EXISTS (SELECT 1 FROM Usuarios WHERE Correo = @Correo)
+    BEGIN SELECT @Codigo = 1002, @Mensaje = N'Ya existe una cuenta con este correo.'; RETURN; END
+
+    INSERT INTO Usuarios (NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro)
+    VALUES (@NombreCompleto, @Correo, @PasswordHash, @TipoCuenta,
+            CASE WHEN @TipoCuenta = 'administrador' THEN @NombreSalon END, GETDATE());
+
+    SELECT @Codigo = 0, @Mensaje = N'Cuenta creada correctamente.';
+
+    SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+    FROM Usuarios WHERE Id = SCOPE_IDENTITY();
+END
+ExecuteSqlStatement -- Para el login: regresa el hash y la API lo verifica (el SP no puede verificar PBKDF2).
+CREATE OR ALTER PROCEDURE sp_Usuario_ObtenerPorCorreo
+    @Correo  NVARCHAR(150),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT Id, NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro
+    FROM Usuarios WHERE Correo = LOWER(TRIM(@Correo));
+END
+ExecuteSqlStatement CREATE OR ALTER PROCEDURE sp_Usuario_Obtener
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+    BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+    FROM Usuarios WHERE Id = @Id;
+END
+ExecuteSqlStatement -- =========================================================================
+-- SALONES
+-- =========================================================================
+
+CREATE OR ALTER PROCEDURE sp_Salon_Crear
+    @AdminId     INT,
+    @Nombre      NVARCHAR(150),
+    @Zona        NVARCHAR(200),
+    @Capacidad   INT,
+    @Descripcion NVARCHAR(1000) = NULL,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Nombre = TRIM(@Nombre);
+    SET @Zona = TRIM(@Zona);
+    SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+    IF ISNULL(@Nombre, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del salón es obligatorio.'; RETURN; END
+
+    IF ISNULL(@Zona, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La zona es obligatoria.'; RETURN; END
+
+    IF ISNULL(@Capacidad, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La capacidad debe ser mayor a 0.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+    BEGIN SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.'; RETURN; END
+
+    -- Siempre nace "no_publicado": todavía no tiene paquetes.
+    INSERT INTO Salones (AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion)
+    VALUES (@AdminId, @Nombre, @Zona, @Capacidad, @Descripcion, 'no_publicado', GETDATE());
+
+    SELECT @Codigo = 0, @Mensaje = N'Salón creado correctamente.';
+
+    SELECT Id, AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion
+    FROM Salones WHERE Id = SCOPE_IDENTITY();
+END
+ExecuteSqlStatement -- Regresa SIEMPRE 3 result sets (salón, paquetes, fotos), vacíos si el salón no existe,
+-- para que la API los pueda leer en orden.
+CREATE OR ALTER PROCEDURE sp_Salon_Obtener
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (SELECT 1 FROM Salones WHERE Id = @Id)
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+    ELSE
+        SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.';
+
+    SELECT Id, AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion
+    FROM Salones WHERE Id = @Id;
+
+    SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+    FROM Paquetes WHERE SalonId = @Id ORDER BY Id;
+
+    SELECT Id, SalonId, Url
+    FROM FotosSalon WHERE SalonId = @Id ORDER BY Id;
+END
+ExecuteSqlStatement -- Si @Estado viene NULL se conserva el actual. Descripcion NULL la borra.
+CREATE OR ALTER PROCEDURE sp_Salon_Actualizar
+    @Id          INT,
+    @AdminId     INT,
+    @Nombre      NVARCHAR(150),
+    @Zona        NVARCHAR(200),
+    @Capacidad   INT,
+    @Descripcion NVARCHAR(1000) = NULL,
+    @Estado      NVARCHAR(20) = NULL,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @DuenoId INT, @EstadoActual NVARCHAR(20);
+    SELECT @DuenoId = AdminId, @EstadoActual = Estado FROM Salones WHERE Id = @Id;
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    SET @Nombre = TRIM(@Nombre);
+    SET @Zona = TRIM(@Zona);
+    SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+    SET @Estado = ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), @EstadoActual);
+
+    IF ISNULL(@Nombre, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del salón es obligatorio.'; RETURN; END
+
+    IF ISNULL(@Zona, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La zona es obligatoria.'; RETURN; END
+
+    IF ISNULL(@Capacidad, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La capacidad debe ser mayor a 0.'; RETURN; END
+
+    IF @Estado NOT IN ('publicado', 'no_publicado')
+    BEGIN SELECT @Codigo = 2004, @Mensaje = N'El estado debe ser "publicado" o "no_publicado".'; RETURN; END
+
+    IF @Estado = 'publicado' AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE SalonId = @Id)
+    BEGIN SELECT @Codigo = 2003, @Mensaje = N'Para publicar el salón se requiere al menos un paquete.'; RETURN; END
+
+    UPDATE Salones
+    SET Nombre = @Nombre, Zona = @Zona, Capacidad = @Capacidad,
+        Descripcion = @Descripcion, Estado = @Estado
+    WHERE Id = @Id;
+
+    SELECT @Codigo = 0, @Mensaje = N'Salón actualizado correctamente.';
+END
+ExecuteSqlStatement -- Paginado: primer result set = datos del paginado, segundo = registros de la página.
+-- @AdminId NULL lista todos. @Pagina < 1 se toma como 1; @TamanoPagina va de 1 a 100.
+CREATE OR ALTER PROCEDURE sp_Salon_Listar
+    @AdminId      INT = NULL,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+
+    DECLARE @Total INT = (SELECT COUNT(*) FROM Salones WHERE @AdminId IS NULL OR AdminId = @AdminId);
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, s.Estado,
+           (SELECT COUNT(*) FROM Paquetes p WHERE p.SalonId = s.Id) AS TotalPaquetes
+    FROM Salones s
+    WHERE @AdminId IS NULL OR s.AdminId = @AdminId
+    ORDER BY s.Id DESC
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+END
+ExecuteSqlStatement -- =========================================================================
+-- PAQUETES
+-- =========================================================================
+
+CREATE OR ALTER PROCEDURE sp_Paquete_Crear
+    @SalonId       INT,
+    @AdminId       INT,
+    @NombrePaquete NVARCHAR(150),
+    @Descripcion   NVARCHAR(500) = NULL,
+    @Precio        DECIMAL(10,2),
+    @Codigo        INT OUTPUT,
+    @Mensaje       NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @SalonId);
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    SET @NombrePaquete = TRIM(@NombrePaquete);
+    SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+    IF ISNULL(@NombrePaquete, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del paquete es obligatorio.'; RETURN; END
+
+    IF ISNULL(@Precio, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El precio debe ser mayor a 0.'; RETURN; END
+
+    INSERT INTO Paquetes (SalonId, NombrePaquete, Descripcion, Precio)
+    VALUES (@SalonId, @NombrePaquete, @Descripcion, @Precio);
+
+    SELECT @Codigo = 0, @Mensaje = N'Paquete agregado correctamente.';
+
+    SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+    FROM Paquetes WHERE Id = SCOPE_IDENTITY();
+END
+ExecuteSqlStatement -- Descripcion NULL la borra.
+CREATE OR ALTER PROCEDURE sp_Paquete_Actualizar
+    @Id            INT,
+    @AdminId       INT,
+    @NombrePaquete NVARCHAR(150),
+    @Descripcion   NVARCHAR(500) = NULL,
+    @Precio        DECIMAL(10,2),
+    @Codigo        INT OUTPUT,
+    @Mensaje       NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @DuenoId INT = (
+        SELECT s.AdminId FROM Paquetes p JOIN Salones s ON s.Id = p.SalonId WHERE p.Id = @Id);
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    SET @NombrePaquete = TRIM(@NombrePaquete);
+    SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+    IF ISNULL(@NombrePaquete, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del paquete es obligatorio.'; RETURN; END
+
+    IF ISNULL(@Precio, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El precio debe ser mayor a 0.'; RETURN; END
+
+    UPDATE Paquetes
+    SET NombrePaquete = @NombrePaquete, Descripcion = @Descripcion, Precio = @Precio
+    WHERE Id = @Id;
+
+    SELECT @Codigo = 0, @Mensaje = N'Paquete actualizado correctamente.';
+
+    SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+    FROM Paquetes WHERE Id = @Id;
+END
+ExecuteSqlStatement -- No deja un salón publicado sin paquetes.
+CREATE OR ALTER PROCEDURE sp_Paquete_Eliminar
+    @Id      INT,
+    @AdminId INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @SalonId INT, @DuenoId INT, @Estado NVARCHAR(20);
+    SELECT @SalonId = s.Id, @DuenoId = s.AdminId, @Estado = s.Estado
+    FROM Paquetes p JOIN Salones s ON s.Id = p.SalonId
+    WHERE p.Id = @Id;
+
+    IF @SalonId IS NULL
+    BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    IF @Estado = 'publicado' AND (SELECT COUNT(*) FROM Paquetes WHERE SalonId = @SalonId) <= 1
+    BEGIN SELECT @Codigo = 3002, @Mensaje = N'Un salón publicado debe tener al menos un paquete. Despublícalo antes de borrar el último.'; RETURN; END
+
+    DELETE FROM Paquetes WHERE Id = @Id;
+
+    SELECT @Codigo = 0, @Mensaje = N'Paquete eliminado correctamente.';
+END
+ExecuteSqlStatement -- =========================================================================
+-- BÚSQUEDA (Sprint 3 — HU-09)
+-- =========================================================================
+
+-- Búsqueda pública: solo salones publicados. Todos los filtros son opcionales y combinables;
+-- NULL, vacío o <= 0 significa "sin filtro". Nunca regresa error: sin resultados es éxito con lista vacía.
+-- Zona: coincidencia parcial sin importar mayúsculas ni acentos ("rio" encuentra "Tepeji del Río").
+-- PrecioMaximo: el salón entra si su paquete más barato (PrecioDesde) cuesta eso o menos.
+-- Paginado igual que sp_Salon_Listar: primer result set = datos del paginado, segundo = la página.
+CREATE OR ALTER PROCEDURE sp_Salon_Buscar
+    @Zona            NVARCHAR(200) = NULL,
+    @CapacidadMinima INT = NULL,
+    @PrecioMaximo    DECIMAL(10,2) = NULL,
+    @Pagina          INT = 1,
+    @TamanoPagina    INT = 10,
+    @Codigo          INT OUTPUT,
+    @Mensaje         NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+    SET @Zona = NULLIF(TRIM(@Zona), '');
+    IF @CapacidadMinima <= 0 SET @CapacidadMinima = NULL;
+    IF @PrecioMaximo <= 0 SET @PrecioMaximo = NULL;
+
+    SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, p.PrecioDesde,
+           (SELECT TOP 1 f.Url FROM FotosSalon f WHERE f.SalonId = s.Id ORDER BY f.Id) AS FotoPrincipal
+    INTO #Resultados
+    FROM Salones s
+    CROSS APPLY (SELECT MIN(Precio) AS PrecioDesde FROM Paquetes WHERE SalonId = s.Id) p
+    WHERE s.Estado = 'publicado'
+      AND p.PrecioDesde IS NOT NULL
+      AND (@Zona IS NULL
+           OR s.Zona COLLATE Latin1_General_CI_AI LIKE N'%' + @Zona + N'%' COLLATE Latin1_General_CI_AI)
+      AND (@CapacidadMinima IS NULL OR s.Capacidad >= @CapacidadMinima)
+      AND (@PrecioMaximo IS NULL OR p.PrecioDesde <= @PrecioMaximo)
+    -- Con filtros opcionales, RECOMPILE arma el plan con los valores reales de cada búsqueda
+    -- para que SQL Server sí use los índices de 03_Indices.sql.
+    OPTION (RECOMPILE);
+
+    DECLARE @Total INT = (SELECT COUNT(*) FROM #Resultados);
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN @Total = 0 THEN N'No se encontraron salones con esos filtros.'
+                           ELSE N'Consulta exitosa.' END;
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT Id, Nombre, Zona, Capacidad, PrecioDesde, FotoPrincipal
+    FROM #Resultados
+    ORDER BY PrecioDesde, Id
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+END
+ExecuteSqlStatement -- =========================================================================
+-- DISPONIBILIDAD (Sprint 4 — HU-12)
+-- =========================================================================
+
+-- Fechas ocupadas de un salón en un mes. Solo cuentan las reservaciones 'confirmada';
+-- las pendientes y canceladas no ocupan la fecha.
+-- Un mes sin fechas ocupadas NO es error: éxito con result set vacío.
+-- Regresa un solo result set con las fechas (FechaEvento) ordenadas.
+CREATE OR ALTER PROCEDURE sp_Salon_Disponibilidad
+    @SalonId INT,
+    @Anio    INT,
+    @Mes     INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF ISNULL(@Mes, 0) NOT BETWEEN 1 AND 12 OR ISNULL(@Anio, 0) NOT BETWEEN 2000 AND 2100
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Mes o año inválido.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    DECLARE @Inicio DATE = DATEFROMPARTS(@Anio, @Mes, 1);
+    DECLARE @Fin DATE = DATEADD(MONTH, 1, @Inicio);
+
+    SELECT DISTINCT FechaEvento
+    INTO #Fechas
+    FROM Reservaciones
+    WHERE SalonId = @SalonId
+      AND Estado = 'confirmada'
+      AND FechaEvento >= @Inicio
+      AND FechaEvento < @Fin;
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN NOT EXISTS (SELECT 1 FROM #Fechas)
+                           THEN N'El salón no tiene fechas ocupadas en ese mes.'
+                           ELSE N'Consulta exitosa.' END;
+
+    SELECT FechaEvento FROM #Fechas ORDER BY FechaEvento;
+END
+ExecuteSqlStatement /* =========================================================================
+   GlamSpaces — Índices para la búsqueda de salones (Sprint 3 — HU-08)
+   Correr DESPUÉS de 01_Tablas.sql y 02_StoredProcedures.sql.
+   Idempotente: solo crea los índices que no existan.
+
+   Los usa sp_Salon_Buscar (HU-09):
+     - filtrado por Estado = 'publicado', zona y capacidad;
+     - "precio desde" = paquete más barato de cada salón;
+     - foto principal = primera foto de cada salón.
+   ========================================================================= */
+
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+ExecuteSqlStatement -- Salones publicados por capacidad, incluyendo zona y nombre.
+--  - Filtrado (WHERE Estado = 'publicado'): solo guarda los salones que participan en la
+--    búsqueda, así es más chico y rápido que la tabla completa.
+--  - Capacidad es la llave: "capacidad mínima" hace una búsqueda directa (seek) en el índice.
+--  - Zona va en INCLUDE y no como llave, porque se busca por coincidencia parcial
+--    (LIKE '%tula%'), que no puede usar un índice para saltar directo. Al estar incluida,
+--    el filtro de zona se resuelve dentro del índice sin leer la tabla.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Salones_Publicados_Capacidad_Zona')
+    CREATE NONCLUSTERED INDEX IX_Salones_Publicados_Capacidad_Zona
+        ON Salones (Capacidad)
+        INCLUDE (Zona, Nombre)
+        WHERE Estado = 'publicado';
+ExecuteSqlStatement -- Paquetes por salón y precio: el precio más bajo de cada salón (MIN) es la primera fila
+-- del índice para ese SalonId. Además acelera el FK Paquetes → Salones.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Paquetes_SalonId_Precio')
+    CREATE NONCLUSTERED INDEX IX_Paquetes_SalonId_Precio
+        ON Paquetes (SalonId, Precio);
+ExecuteSqlStatement -- Fotos por salón: la primera foto (menor Id) sale directo del índice.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_FotosSalon_SalonId')
+    CREATE NONCLUSTERED INDEX IX_FotosSalon_SalonId
+        ON FotosSalon (SalonId)
+        INCLUDE (Url);
+ExecuteSqlStatement -- =========================================================================
+-- Sprint 4 — Reservaciones (HU-11 / HU-12)
+-- =========================================================================
+
+-- Disponibilidad del salón por mes (sp_Salon_Disponibilidad): busca por salón y rango
+-- de fechas; Estado va incluido para filtrar las confirmadas sin leer la tabla.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Reservaciones_Salon_Fecha')
+    CREATE NONCLUSTERED INDEX IX_Reservaciones_Salon_Fecha
+        ON Reservaciones (SalonId, FechaEvento)
+        INCLUDE (Estado);
+ExecuteSqlStatement -- Regla de negocio: un salón no puede tener 2 reservaciones confirmadas el mismo día.
+-- Único y filtrado: las pendientes y canceladas sí pueden repetir fecha.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Reservaciones_Confirmada')
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Reservaciones_Confirmada
+        ON Reservaciones (SalonId, FechaEvento)
+        WHERE Estado = 'confirmada';
+Committing Transaction
+202610230900: M001_LineaBase migrated
+-------------------------------------------------------------------------------
+202610230910: M002_CrearTablaBusquedasFavoritas migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+CreateTable BusquedasFavoritas
+CreateForeignKey FK_BusquedasFavoritas_Usuarios BusquedasFavoritas(UsuarioId) Usuarios(Id)
+CreateForeignKey FK_BusquedasFavoritas_Salones BusquedasFavoritas(SalonId) Salones(Id)
+Committing Transaction
+202610230910: M002_CrearTablaBusquedasFavoritas migrated
+-------------------------------------------------------------------------------
+202610230920: M003_AgregarColumnaTelefonoSalones migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+AlterTable Salones
+CreateColumn Salones Telefono String
+Committing Transaction
+202610230920: M003_AgregarColumnaTelefonoSalones migrated
+-------------------------------------------------------------------------------
+202610230930: M004_IndiceUnicoBusquedasFavoritas migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+CreateIndex BusquedasFavoritas (UsuarioId, SalonId)
+Committing Transaction
+202610230930: M004_IndiceUnicoBusquedasFavoritas migrated
+-------------------------------------------------------------------------------
+202610291000: M005_CrearSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Solicitudes (
+        Id              INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Solicitudes PRIMARY KEY,
+        SalonId         INT           NOT NULL CONSTRAINT FK_Solicitudes_Salones  REFERENCES dbo.Salones(Id),
+        ClienteId       INT           NOT NULL CONSTRAINT FK_Solicitudes_Usuarios REFERENCES dbo.Usuarios(Id),
+        PaqueteId       INT           NULL     CONSTRAINT FK_Solicitudes_Paquetes REFERENCES dbo.Paquetes(Id),
+        FechaEvento     DATE          NOT NULL,
+        TipoEvento      NVARCHAR(100) NOT NULL,
+        NumeroInvitados INT           NOT NULL,
+        Comentarios     NVARCHAR(500) NULL,
+        Estado          NVARCHAR(20)  NOT NULL CONSTRAINT DF_Solicitudes_Estado DEFAULT 'pendiente',
+        FechaCreacion   DATETIME2(7)  NOT NULL CONSTRAINT DF_Solicitudes_FechaCreacion DEFAULT SYSUTCDATETIME()
+    );
+END
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Invitados')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Invitados CHECK (NumeroInvitados > 0);
+ExecuteSqlStatement 
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_Solicitudes_Estado')
+    ALTER TABLE dbo.Solicitudes ADD CONSTRAINT CK_Solicitudes_Estado CHECK (Estado IN ('pendiente', 'confirmada', 'rechazada'));
+ExecuteSqlStatement 
+SET QUOTED_IDENTIFIER ON;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente'
+               AND object_id = OBJECT_ID(N'dbo.Solicitudes'))
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Solicitudes_Cliente_Salon_Fecha_Pendiente
+        ON dbo.Solicitudes (ClienteId, SalonId, FechaEvento)
+        WHERE Estado = 'pendiente';
+Committing Transaction
+202610291000: M005_CrearSolicitudes migrated
+-------------------------------------------------------------------------------
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL
+    ALTER TABLE dbo.Solicitudes ADD TelefonoContacto NVARCHAR(20) NULL;
+Committing Transaction
+202610291100: M006_AgregarTelefonoContactoSolicitudes migrated
+-------------------------------------------------------------------------------
+202610291200: M007_ProcedimientosSolicitudes migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement 
+CREATE OR ALTER PROCEDURE sp_Solicitud_Crear
+    @ClienteId        INT,
+    @SalonId          INT,
+    @PaqueteId        INT = NULL,
+    @FechaEvento      DATE,
+    @TipoEvento       NVARCHAR(100),
+    @NumeroInvitados  INT,
+    @TelefonoContacto NVARCHAR(20),
+    @Comentarios      NVARCHAR(500) = NULL,
+    @Codigo           INT OUTPUT,
+    @Mensaje          NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+    IF @TipoCuenta IS NULL
+    BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+    IF @TipoCuenta <> 'cliente'
+    BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden enviar solicitudes.'; RETURN; END
+
+    DECLARE @Capacidad INT = (SELECT Capacidad FROM Salones WHERE Id = @SalonId AND Estado = 'publicado');
+
+    IF @Capacidad IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe o no está publicado.'; RETURN; END
+
+    IF @PaqueteId IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE Id = @PaqueteId AND SalonId = @SalonId)
+    BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe o no es de ese salón.'; RETURN; END
+
+    SET @TipoEvento = TRIM(@TipoEvento);
+    SET @TelefonoContacto = TRIM(@TelefonoContacto);
+    SET @Comentarios = NULLIF(TRIM(@Comentarios), '');
+
+    -- "Hoy" en la hora del centro de México: la BD corre en UTC y de noche ya sería mañana.
+    DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+    IF ISNULL(@TipoEvento, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de evento es obligatorio.'; RETURN; END
+
+    IF ISNULL(@TelefonoContacto, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El teléfono de contacto es obligatorio.'; RETURN; END
+
+    IF @FechaEvento IS NULL OR @FechaEvento < @Hoy
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La fecha del evento no puede ser una fecha pasada.'; RETURN; END
+
+    IF ISNULL(@NumeroInvitados, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El número de invitados debe ser mayor a 0.'; RETURN; END
+
+    IF @NumeroInvitados > @Capacidad
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Los invitados exceden la capacidad del salón.'; RETURN; END
+
+    DECLARE @Id INT;
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        -- UPDLOCK + HOLDLOCK bloquean el salón y la fecha hasta el COMMIT: si al mismo tiempo
+        -- se confirma una solicitud de ese día, una operación espera a la otra.
+        IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                   WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+        BEGIN
+            ROLLBACK;
+            SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+            RETURN;
+        END
+
+        -- Estado y FechaCreacion explícitos para no depender de los DEFAULT.
+        INSERT INTO Solicitudes (SalonId, ClienteId, PaqueteId, FechaEvento, TipoEvento, NumeroInvitados,
+                                 Comentarios, Estado, FechaCreacion, TelefonoContacto)
+        VALUES (@SalonId, @ClienteId, @PaqueteId, @FechaEvento, @TipoEvento, @NumeroInvitados,
+                @Comentarios, 'pendiente', SYSUTCDATETIME(), @TelefonoContacto);
+
+        SET @Id = SCOPE_IDENTITY();
+
+        COMMIT;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+
+        -- UX_Solicitudes_Cliente_Salon_Fecha_Pendiente rechaza una segunda solicitud pendiente
+        -- del mismo cliente, salón y fecha (también si llegan dos al mismo tiempo).
+        IF ERROR_NUMBER() IN (2601, 2627)
+        BEGIN SELECT @Codigo = 4004, @Mensaje = N'Ya tienes una solicitud pendiente para ese salón y fecha.'; RETURN; END;
+
+        THROW;
+    END CATCH
+
+    SELECT @Codigo = 0, @Mensaje = N'Solicitud enviada correctamente.';
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.Id = @Id;
+END
+ExecuteSqlStatement 
+CREATE OR ALTER PROCEDURE sp_Solicitud_Obtener
+    @Id        INT,
+    @ClienteId INT,
+    @Codigo    INT OUTPUT,
+    @Mensaje   NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+    IF @TipoCuenta IS NULL
+    BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+    IF @TipoCuenta <> 'cliente'
+    BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden consultar solicitudes.'; RETURN; END
+
+    DECLARE @DuenoId INT = (SELECT ClienteId FROM Solicitudes WHERE Id = @Id);
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 4001, @Mensaje = N'La solicitud no existe.'; RETURN; END
+
+    IF @DuenoId <> @ClienteId
+    BEGIN SELECT @Codigo = 4005, @Mensaje = N'No tienes acceso a esta solicitud.'; RETURN; END
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.Id = @Id;
+END
+ExecuteSqlStatement 
+CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorCliente
+    @ClienteId    INT,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+
+    DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+    DECLARE @Total INT = 0;
+
+    IF @TipoCuenta IS NULL
+        SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.';
+    ELSE IF @TipoCuenta <> 'cliente'
+        SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden consultar solicitudes.';
+    ELSE
+    BEGIN
+        SET @Total = (SELECT COUNT(*) FROM Solicitudes WHERE ClienteId = @ClienteId);
+        SELECT @Codigo = 0,
+               @Mensaje = CASE WHEN @Total = 0 THEN N'No tienes solicitudes registradas.'
+                               ELSE N'Consulta exitosa.' END;
+    END
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.ClienteId = @ClienteId AND @Codigo = 0
+    ORDER BY s.FechaCreacion DESC, s.Id DESC
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+END
+Committing Transaction
+202610291200: M007_ProcedimientosSolicitudes migrated
+-------------------------------------------------------------------------------
+202611051000: M008_EstadoSolicitudesHU17 migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement /* =========================================================================
+   GlamSpaces — Estado de solicitud y bloqueo de fecha (Sprint 6 — HU-17)
+   Correr DESPUÉS de 08_SolicitudesHU15.sql. Idempotente: se puede volver a correr.
+   La migración M008_EstadoSolicitudesHU17 ejecuta este mismo script.
+
+   1) UX_Solicitudes_Confirmada: un salón no puede tener dos solicitudes confirmadas el mismo día.
+   2) sp_Salon_Disponibilidad: una fecha está ocupada si tiene una reservación confirmada (HU-11)
+      O una solicitud confirmada (HU-17). Así el calendario se entera al instante de cada confirmación.
+   3) sp_Solicitud_Crear: tampoco deja pedir una fecha ocupada por una reservación confirmada.
+   4) sp_Solicitud_CambiarEstado (nuevo): confirma o rechaza una solicitud pendiente. Al confirmar,
+      rechaza en la misma transacción las demás pendientes del mismo salón y fecha.
+   ========================================================================= */
+
+-- Requeridos por los índices filtrados de Solicitudes (con OFF, los UPDATE e INSERT fallarían).
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 1) Una sola solicitud confirmada por salón y fecha
+-- -------------------------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Solicitudes_Confirmada'
+               AND object_id = OBJECT_ID(N'dbo.Solicitudes'))
+BEGIN
+    -- Si ya hay datos que violan la regla, el índice no se puede crear: se avisa en lugar de fallar a medias.
+    IF EXISTS (SELECT 1 FROM dbo.Solicitudes WHERE Estado = 'confirmada'
+               GROUP BY SalonId, FechaEvento HAVING COUNT(*) > 1)
+        THROW 50010, 'HU-17: hay solicitudes confirmadas repetidas para el mismo salón y fecha; corrígelas antes de crear UX_Solicitudes_Confirmada.', 1;
+
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Solicitudes_Confirmada
+        ON dbo.Solicitudes (SalonId, FechaEvento)
+        WHERE Estado = 'confirmada';
+    PRINT 'Índice UX_Solicitudes_Confirmada creado.';
+END
+ELSE
+    PRINT 'El índice UX_Solicitudes_Confirmada ya existe.';
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 2) Disponibilidad: reservaciones confirmadas + solicitudes confirmadas
+-- -------------------------------------------------------------------------
+-- Regresa las fechas ocupadas del mes. Mes fuera de 1–12 o año fuera de 2000–2100 → 1001;
+-- salón inexistente → 2001; mes sin ocupadas = éxito con lista vacía.
+CREATE OR ALTER PROCEDURE sp_Salon_Disponibilidad
+    @SalonId INT,
+    @Anio    INT,
+    @Mes     INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF ISNULL(@Mes, 0) NOT BETWEEN 1 AND 12 OR ISNULL(@Anio, 0) NOT BETWEEN 2000 AND 2100
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Mes o año inválido.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    DECLARE @Inicio DATE = DATEFROMPARTS(@Anio, @Mes, 1);
+    DECLARE @Fin DATE = DATEADD(MONTH, 1, @Inicio);
+
+    -- UNION quita repetidos: una fecha aparece una vez aunque esté en las dos tablas.
+    SELECT FechaEvento
+    INTO #Fechas
+    FROM (
+        SELECT FechaEvento FROM Reservaciones
+        WHERE SalonId = @SalonId AND Estado = 'confirmada' AND FechaEvento >= @Inicio AND FechaEvento < @Fin
+        UNION
+        SELECT FechaEvento FROM Solicitudes
+        WHERE SalonId = @SalonId AND Estado = 'confirmada' AND FechaEvento >= @Inicio AND FechaEvento < @Fin
+    ) ocupadas;
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN NOT EXISTS (SELECT 1 FROM #Fechas)
+                           THEN N'El salón no tiene fechas ocupadas en ese mes.'
+                           ELSE N'Consulta exitosa.' END;
+
+    SELECT FechaEvento FROM #Fechas ORDER BY FechaEvento;
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 3) Crear solicitud: la fecha ocupada también cuenta las reservaciones confirmadas
+-- -------------------------------------------------------------------------
+-- Igual que en 08_SolicitudesHU15.sql; solo cambia la revisión de fecha ocupada (paso 5).
+CREATE OR ALTER PROCEDURE sp_Solicitud_Crear
+    @ClienteId        INT,
+    @SalonId          INT,
+    @PaqueteId        INT = NULL,
+    @FechaEvento      DATE,
+    @TipoEvento       NVARCHAR(100),
+    @NumeroInvitados  INT,
+    @TelefonoContacto NVARCHAR(20),
+    @Comentarios      NVARCHAR(500) = NULL,
+    @Codigo           INT OUTPUT,
+    @Mensaje          NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+    IF @TipoCuenta IS NULL
+    BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+    IF @TipoCuenta <> 'cliente'
+    BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden enviar solicitudes.'; RETURN; END
+
+    DECLARE @Capacidad INT = (SELECT Capacidad FROM Salones WHERE Id = @SalonId AND Estado = 'publicado');
+
+    IF @Capacidad IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe o no está publicado.'; RETURN; END
+
+    IF @PaqueteId IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE Id = @PaqueteId AND SalonId = @SalonId)
+    BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe o no es de ese salón.'; RETURN; END
+
+    SET @TipoEvento = TRIM(@TipoEvento);
+    SET @TelefonoContacto = TRIM(@TelefonoContacto);
+    SET @Comentarios = NULLIF(TRIM(@Comentarios), '');
+
+    -- "Hoy" en la hora del centro de México: la BD corre en UTC y de noche ya sería mañana.
+    DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+    IF ISNULL(@TipoEvento, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de evento es obligatorio.'; RETURN; END
+
+    IF ISNULL(@TelefonoContacto, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El teléfono de contacto es obligatorio.'; RETURN; END
+
+    IF @FechaEvento IS NULL OR @FechaEvento < @Hoy
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La fecha del evento no puede ser una fecha pasada.'; RETURN; END
+
+    IF ISNULL(@NumeroInvitados, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El número de invitados debe ser mayor a 0.'; RETURN; END
+
+    IF @NumeroInvitados > @Capacidad
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Los invitados exceden la capacidad del salón.'; RETURN; END
+
+    DECLARE @Id INT;
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        -- UPDLOCK + HOLDLOCK bloquean el salón y la fecha hasta el COMMIT: si al mismo tiempo
+        -- se confirma una solicitud de ese día, una operación espera a la otra.
+        -- Ocupada = solicitud confirmada (HU-17) o reservación confirmada (HU-11).
+        IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                   WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+           OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                      WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+        BEGIN
+            ROLLBACK;
+            SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+            RETURN;
+        END
+
+        -- Estado y FechaCreacion explícitos para no depender de los DEFAULT.
+        INSERT INTO Solicitudes (SalonId, ClienteId, PaqueteId, FechaEvento, TipoEvento, NumeroInvitados,
+                                 Comentarios, Estado, FechaCreacion, TelefonoContacto)
+        VALUES (@SalonId, @ClienteId, @PaqueteId, @FechaEvento, @TipoEvento, @NumeroInvitados,
+                @Comentarios, 'pendiente', SYSUTCDATETIME(), @TelefonoContacto);
+
+        SET @Id = SCOPE_IDENTITY();
+
+        COMMIT;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+
+        -- UX_Solicitudes_Cliente_Salon_Fecha_Pendiente rechaza una segunda solicitud pendiente
+        -- del mismo cliente, salón y fecha (también si llegan dos al mismo tiempo).
+        IF ERROR_NUMBER() IN (2601, 2627)
+        BEGIN SELECT @Codigo = 4004, @Mensaje = N'Ya tienes una solicitud pendiente para ese salón y fecha.'; RETURN; END;
+
+        THROW;
+    END CATCH
+
+    SELECT @Codigo = 0, @Mensaje = N'Solicitud enviada correctamente.';
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.Id = @Id;
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 4) Confirmar o rechazar una solicitud (lo expone la HU-18)
+-- -------------------------------------------------------------------------
+-- @Estado: 'confirmada' o 'rechazada'. Solo el administrador dueño del salón y solo si sigue 'pendiente'.
+--  - Confirmar: en una transacción la confirma y rechaza las demás pendientes del mismo salón y fecha.
+--    Si la fecha ya está ocupada (solicitud o reservación confirmada) → 4002 y no cambia nada.
+--  - Rechazar: solo cambia esa solicitud; la fecha sigue disponible.
+-- Regresa la solicitud con su nuevo estado y cuántas pendientes se rechazaron automáticamente.
+CREATE OR ALTER PROCEDURE sp_Solicitud_CambiarEstado
+    @Id      INT,
+    @AdminId INT,
+    @Estado  NVARCHAR(20),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Estado = LOWER(TRIM(@Estado));
+
+    IF @Estado IS NULL OR @Estado NOT IN ('confirmada', 'rechazada')
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El estado debe ser "confirmada" o "rechazada".'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+    BEGIN SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.'; RETURN; END
+
+    DECLARE @SalonId INT, @FechaEvento DATE, @EstadoActual NVARCHAR(20);
+    SELECT @SalonId = SalonId, @FechaEvento = FechaEvento, @EstadoActual = Estado
+    FROM Solicitudes WHERE Id = @Id;
+
+    IF @SalonId IS NULL
+    BEGIN SELECT @Codigo = 4001, @Mensaje = N'La solicitud no existe.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId AND AdminId = @AdminId)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño del salón de esta solicitud.'; RETURN; END
+
+    IF @EstadoActual <> 'pendiente'
+    BEGIN SELECT @Codigo = 4006, @Mensaje = N'La solicitud ya fue atendida.'; RETURN; END
+
+    DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+    IF @Estado = 'confirmada' AND @FechaEvento < @Hoy
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'No se puede confirmar: la fecha del evento ya pasó.'; RETURN; END
+
+    DECLARE @Rechazadas INT = 0;
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        -- Se vuelve a revisar con bloqueo: otra petición pudo atenderla entre la validación y aquí.
+        IF NOT EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id AND Estado = 'pendiente')
+        BEGIN
+            ROLLBACK;
+            SELECT @Codigo = 4006, @Mensaje = N'La solicitud ya fue atendida.';
+            RETURN;
+        END
+
+        IF @Estado = 'confirmada'
+        BEGIN
+            -- UPDLOCK + HOLDLOCK: mientras dura la transacción nadie más confirma ni crea en ese salón y fecha.
+            IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                       WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+               OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                          WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+            BEGIN
+                ROLLBACK;
+                SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+                RETURN;
+            END
+
+            UPDATE Solicitudes SET Estado = 'confirmada' WHERE Id = @Id;
+
+            -- Bloqueo de fecha: las demás pendientes de ese salón y día ya no pueden atenderse.
+            UPDATE Solicitudes SET Estado = 'rechazada'
+            WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'pendiente' AND Id <> @Id;
+
+            SET @Rechazadas = @@ROWCOUNT;
+        END
+        ELSE
+            UPDATE Solicitudes SET Estado = 'rechazada' WHERE Id = @Id;
+
+        COMMIT;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+
+        -- UX_Solicitudes_Confirmada: otra confirmación del mismo salón y fecha ganó la carrera.
+        IF ERROR_NUMBER() IN (2601, 2627)
+        BEGIN SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.'; RETURN; END;
+
+        THROW;
+    END CATCH
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN @Estado = 'confirmada'
+                           THEN CONCAT(N'Solicitud confirmada. Se rechazaron ', @Rechazadas,
+                                       N' solicitud(es) pendiente(s) de esa fecha.')
+                           ELSE N'Solicitud rechazada.' END;
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion, @Rechazadas AS SolicitudesRechazadas
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.Id = @Id;
+END
+Committing Transaction
+202611051000: M008_EstadoSolicitudesHU17 migrated
+Task completed.
+
+>>> .\scripts\migraciones.ps1 listar
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+202610291000: M005_CrearSolicitudes
+202610291100: M006_AgregarTelefonoContactoSolicitudes
+202610291200: M007_ProcedimientosSolicitudes
+⌘ 202611051000: M008_EstadoSolicitudesHU17 (current)
+Task completed.
+
+>>> Pruebas de la HU-17 sobre la BD recién creada
+Ejecutando Database\10_PruebasHU17.sql en [GlamSpacesMigraciones]
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 1       1 [PruebaHU17] Salón         3                         01/06/2030 12:00:00 a. m. Boda                   100 7710000001
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 3       1 [PruebaHU17] Salón         5                         08/06/2030 12:00:00 a. m. Cumpleaños              40 7710000003
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 4       1 [PruebaHU17] Salón         6                         08/06/2030 12:00:00 a. m. Graduación              60 7710000004
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 7       1 [PruebaHU17] Salón         5                         15/06/2030 12:00:00 a. m. Evento                  50 7710000009
+(1 filas)
+HU-17: 16 de 16 pruebas pasan. Datos de prueba borrados.
+
+ N Prueba                                                          Esperado                                 Obtenido                                                                         Resultado
+ - ------                                                          --------                                 --------                                                                         ---------
+ 1 CA1 · confirmar una de dos pendientes (código)                  0                                        0 Solicitud confirmada. Se rechazaron 1 solicitud(es) pendiente(s) de esa fecha. PASA     
+ 2 CA1 · la confirmada                                             confirmada                               confirmada                                                                       PASA     
+ 3 CA1 · la otra cambia sola                                       rechazada                                rechazada                                                                        PASA     
+ 4 CA2 · fecha confirmada en la disponibilidad                     2030-06-01                               2030-06-01                                                                       PASA     
+ 5 CA2 · crear otra solicitud en la fecha ocupada                  4002                                     4002 La fecha ya no está disponible.                                             PASA     
+ 6 CA3 · la solicitud rechazada                                    rechazada                                rechazada                                                                        PASA     
+ 7 CA3 · la fecha NO aparece ocupada                               sin 2030-06-08                           2030-06-01                                                                       PASA     
+ 8 CA3 · otro cliente aún puede pedir esa fecha                    0                                        0 Solicitud enviada correctamente.                                               PASA     
+ 9 CA4 · 4 solicitudes de la misma fecha, se confirma 1            1 confirmada (la elegida) y 3 rechazadas 1 confirmada(s), 3 rechazada(s), 0 pendiente(s)                                  PASA     
+10 CA4 · mensaje con las rechazadas                                ...Se rechazaron 3...                    Solicitud confirmada. Se rechazaron 3 solicitud(es) pendiente(s) de esa fecha.   PASA     
+11 Regla · 2a confirmada directa en BD (UX_Solicitudes_Confirmada) error 2601                               error 2601                                                                       PASA     
+12 Error · confirmar una solicitud ya atendida                     4006                                     4006 La solicitud ya fue atendida.                                               PASA     
+13 Error · otro administrador no puede confirmar                   2002                                     2002 No eres el dueño del salón de esta solicitud.                               PASA     
+14 Error · estado inválido                                         1001                                     1001 El estado debe ser "confirmada" o "rechazada".                              PASA     
+15 Consistencia · confirmar si hay reservación confirmada (HU-11)  4002 y sigue pendiente                   4002 · pendiente                                                                 PASA     
+16 Consistencia · crear solicitud si hay reservación confirmada    4002                                     4002 La fecha ya no está disponible.                                             PASA
+(16 filas)
+# Código de salida: 0
