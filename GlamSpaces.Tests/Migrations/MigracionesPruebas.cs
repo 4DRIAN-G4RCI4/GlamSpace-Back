@@ -29,6 +29,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M006_AgregarTelefonoContactoSolicitudes), 202610291100)]
     [InlineData(typeof(M007_ProcedimientosSolicitudes), 202610291200)]
     [InlineData(typeof(M008_EstadoSolicitudesHU17), 202611051000)]
+    [InlineData(typeof(M009_SolicitudesAdminHU18), 202611051100)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -375,5 +376,31 @@ public class MigracionesPruebas
         // Actuar / Afirmar: Single() exige exactamente un lote con ese SP.
         Assert.Throws<InvalidOperationException>(() =>
             M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M008_EstadoSolicitudesHU17.ScriptHu15, "sp_No_Existe"));
+    }
+
+    [Fact]
+    public void M009_Up_EjecutaElScript11ConElListadoPorSalonOrdenadoPorFecha()
+    {
+        // Actuar
+        var sentencias = ExpresionesUp(new M009_SolicitudesAdminHU18()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+        var listar = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorSalon"));
+
+        // Afirmar: mismo contenido que el script; solo el dueño; pendientes por defecto; por fecha del evento.
+        Assert.Equal(ScriptsSql.Lotes(M009_SolicitudesAdminHU18.ScriptHu18), sentencias);
+        Assert.Contains("ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), 'pendiente')", listar);
+        Assert.Contains("@Codigo = 2002", listar);
+        Assert.Contains("u.NombreCompleto AS NombreCliente", listar);
+        Assert.Contains("p.Precio AS PrecioPaquete", listar);
+        Assert.Contains("ORDER BY s.FechaEvento, s.Id", listar);
+    }
+
+    [Fact]
+    public void M009_Down_BorraElListadoPorSalon()
+    {
+        // Actuar
+        var sentencia = Assert.Single(ExpresionesDown(new M009_SolicitudesAdminHU18()).Cast<ExecuteSqlStatementExpression>()).SqlStatement;
+
+        // Afirmar
+        Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Solicitud_ListarPorSalon;", sentencia);
     }
 }
