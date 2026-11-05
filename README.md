@@ -20,6 +20,7 @@ Plataforma para encontrar y reservar salones de eventos.
 | Sprint 3 | HU-08: índices · HU-09: búsqueda y filtrado | ✅ En producción |
 | Sprint 4 | HU-11, HU-12: tabla de reservaciones · detalle y disponibilidad del salón | 🚧 En desarrollo |
 | Sprint 5 | HU-14, HU-16: tabla de solicitudes y teléfono de contacto · [HU-15: crear y consultar solicitudes](#sprint-5--solicitudes-hu-15) | 🚧 En desarrollo |
+| Sprint 6 | [HU-17: estado de solicitud y bloqueo de fecha](#sprint-6--estado-de-solicitud-y-bloqueo-de-fecha-hu-17) | 🚧 En desarrollo |
 
 ## Cómo correrla
 
@@ -316,6 +317,7 @@ También responden con este formato el JSON mal formado (`1001`) y cualquier err
 | 4003 | 400 | El usuario no es cliente |
 | 4004 | 409 | Ya hay una solicitud pendiente del cliente para ese salón y fecha |
 | 4005 | 403 | La solicitud es de otro cliente |
+| 4006 | 409 | La solicitud ya fue atendida (ya no está pendiente) |
 | 5000 | 500 | Error interno |
 
 ### Endpoints vigentes (todos POST)
@@ -776,3 +778,43 @@ Todavía no hay JWT: el `clienteId` viaja en el body, así que cualquiera podrí
 de otro cliente y ver o crear solicitudes a su nombre. La validación `4005` solo compara contra el
 `clienteId` recibido. Se corrige al implementar la autenticación con token: el `clienteId` se tomará
 del JWT y dejará de recibirse en el body.
+
+---
+
+## Sprint 6 — Estado de solicitud y bloqueo de fecha (HU-17)
+
+Al **confirmar** una solicitud, la fecha queda bloqueada para ese salón y las demás solicitudes
+**pendientes** de ese día y salón pasan solas a **rechazada**. El calendario de disponibilidad (HU-11/12)
+muestra la fecha ocupada de inmediato.
+
+| Pieza | Dónde |
+|---|---|
+| Índice `UX_Solicitudes_Confirmada`, `sp_Salon_Disponibilidad`, `sp_Solicitud_Crear` y `sp_Solicitud_CambiarEstado` | Migración `M008_EstadoSolicitudesHU17` = `Database/09_EstadoSolicitudesHU17.sql` |
+| Pruebas de los criterios con datos de ejemplo | `Database/10_PruebasHU17.sql` (solo local o de prueba; borra sus datos) |
+| Código `4006` → HTTP 409 | `CodigosError.SolicitudYaAtendida` |
+
+### Reglas
+
+- **Fecha ocupada** = el salón tiene una **reservación confirmada** (HU-11) **o** una **solicitud confirmada** (HU-17).
+  La usan la disponibilidad, crear solicitud (`4002`) y confirmar (`4002`).
+- Una fecha confirmada para un salón no puede tener otra solicitud confirmada: lo garantiza
+  `UX_Solicitudes_Confirmada` aunque lleguen dos confirmaciones al mismo tiempo.
+- `sp_Solicitud_CambiarEstado @Id, @AdminId, @Estado` (`confirmada` o `rechazada`): solo el admin dueño del salón
+  (`2002`) y solo si la solicitud sigue `pendiente` (`4006`). Confirmar y rechazar las demás pendientes es una
+  sola transacción. Rechazar no bloquea la fecha. El endpoint lo agrega la HU-18.
+
+### Criterios de aceptación (verificados con `Database/10_PruebasHU17.sql`: 16 de 16)
+
+| # | Dado que / Cuando | Entonces |
+|---|---|---|
+| 1 | Dos pendientes de la misma fecha y salón; se confirma una | La otra pasa a `rechazada` |
+| 2 | Se confirma una solicitud y se consulta la disponibilidad | La fecha aparece ocupada de inmediato |
+| 3 | Se rechaza una solicitud sin otra en esa fecha | La fecha sigue disponible |
+| 4 | Varias solicitudes de la misma fecha; se confirma una | Solo esa queda confirmada y el resto rechazadas |
+
+### Para desplegar
+
+Correr `Database/09_EstadoSolicitudesHU17.sql` en `glamspaces-db` (idempotente) o aplicar la migración `M008`.
+Si ya hubiera dos solicitudes confirmadas del mismo salón y fecha, el script se detiene con `THROW 50010`
+antes de crear el índice. **No** correr `10_PruebasHU17.sql` en producción.
+

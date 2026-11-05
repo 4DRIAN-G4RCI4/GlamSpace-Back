@@ -1,6 +1,6 @@
 # Versionamiento de la base de datos — GlamSpace-Back
 
-**Actividad: Parte 2 · Sprint 4 (y HU-14 / HU-16 del Sprint 5) · Responsable: Adrian Adonai García Jiménez**
+**Actividad: Parte 2 · Sprint 4 (y HU-14 / HU-16 del Sprint 5, HU-17 del Sprint 6) · Responsable: Adrian Adonai García Jiménez**
 
 Herramienta: **FluentMigrator 8.0.1** · Base de datos: SQL Server (LocalDB en desarrollo, contenedor
 SQL Server 2022 en GitHub Actions; producción es Azure SQL, que **no** se toca en esta práctica).
@@ -120,6 +120,8 @@ scripts/migraciones.ps1            listar, subir, rollback, reaplicar, respaldar
 | 004 | `202610230930` | `M004_IndiceUnicoBusquedasFavoritas` | **Índice / restricción**: un usuario no puede guardar el mismo salón dos veces. | `Create.Index("UX_BusquedasFavoritas_Usuario_Salon")` único sobre `(UsuarioId, SalonId)`. | `Delete.Index("UX_BusquedasFavoritas_Usuario_Salon")`. |
 | 005 | `202610291000` | `M005_CrearSolicitudes` | **HU-14 (Sprint 5)**: tabla `Solicitudes` de solicitudes de reservación. Ya existía en producción (se creó a mano), por eso es idempotente. Ver [sección 12](#12-sprint-5--hu-14-tabla-solicitudes). | 4 lotes `Execute.Sql`, cada uno con `IF OBJECT_ID … IS NULL` / `IF NOT EXISTS`: tabla con PK, 3 FK y 2 `DEFAULT`; `CK_Solicitudes_Invitados`; `CK_Solicitudes_Estado`; índice único filtrado `UX_Solicitudes_Cliente_Salon_Fecha_Pendiente`. | `Delete.Table("Solicitudes")` (se van con ella sus restricciones e índice). |
 | 006 | `202610291100` | `M006_AgregarTelefonoContactoSolicitudes` | **HU-16 (Sprint 5)**: teléfono de contacto del formulario de solicitud. Ya se agregó a mano en producción con `07_TelefonoSolicitudesHU16.sql`. Ver [sección 13](#13-sprint-5--hu-16-teléfono-de-contacto-en-solicitudes). | `IF COL_LENGTH(...) IS NULL ALTER TABLE dbo.Solicitudes ADD TelefonoContacto NVARCHAR(20) NULL`. | `Delete.Column("TelefonoContacto").FromTable("Solicitudes")`. |
+| 007 | `202610291200` | `M007_ProcedimientosSolicitudes` | **HU-15 (Sprint 5, Alexis)**: SP de solicitudes del cliente (mismo contenido que `08_SolicitudesHU15.sql`). | `sp_Solicitud_Crear`, `sp_Solicitud_Obtener`, `sp_Solicitud_ListarPorCliente` con `CREATE OR ALTER`. | Borra los 3 SP. |
+| 008 | `202611051000` | `M008_EstadoSolicitudesHU17` | **HU-17 (Sprint 6)**: confirmar o rechazar solicitudes y bloqueo de fecha. Ver [sección 14](#14-sprint-6--hu-17-estado-de-solicitud-y-bloqueo-de-fecha). | Ejecuta `Database/09_EstadoSolicitudesHU17.sql` incrustado: índice `UX_Solicitudes_Confirmada`, disponibilidad con solicitudes confirmadas, `sp_Solicitud_Crear` que revisa reservaciones y `sp_Solicitud_CambiarEstado`. | Quita el SP y el índice nuevos y restaura `sp_Salon_Disponibilidad` (02) y `sp_Solicitud_Crear` (08). |
 
 **Detalle técnico de la línea base:** FluentMigrator no acepta el separador `GO` dentro de un mismo
 `Execute.Sql`, y los scripts de `Database/` lo usan entre cada SP. `ScriptsSql.Lotes()` divide cada
@@ -2674,7 +2676,252 @@ TelefonoContacto nvarchar       20 NULL
 
 ---
 
-## 14. Capturas de pantalla
+## 14. Sprint 6 — HU-17: estado de solicitud y bloqueo de fecha
+
+**Rama:** `Sprint6_Adrian` · **Migración:** `M008_EstadoSolicitudesHU17` (`202611051000`)
+· **Scripts:** `Database/09_EstadoSolicitudesHU17.sql` (esquema) y `Database/10_PruebasHU17.sql` (pruebas)
+
+### El problema que resuelve
+
+Hasta la HU-15 había dos "bloqueos de fecha" que no se hablaban:
+
+| Qué | Leía de |
+|---|---|
+| Disponibilidad del salón (HU-11/12, `sp_Salon_Disponibilidad`) | solo `Reservaciones` confirmadas |
+| Crear solicitud (HU-15, `sp_Solicitud_Crear`) | solo `Solicitudes` confirmadas |
+
+Si se confirmaba una **solicitud**, el calendario seguía mostrando la fecha libre. Esto contradecía el
+criterio 2 de la HU-17.
+
+### Qué cambia (script 09 = migración 008)
+
+| # | Cambio | Para qué |
+|---|---|---|
+| 1 | Índice único filtrado **`UX_Solicitudes_Confirmada`** `(SalonId, FechaEvento) WHERE Estado = 'confirmada'` | Regla de negocio en la BD: un salón no puede tener dos solicitudes confirmadas el mismo día, aunque lleguen dos confirmaciones al mismo tiempo. Antes de crearlo se revisa que no haya datos repetidos (`THROW 50010`). |
+| 2 | **`sp_Salon_Disponibilidad`**: `Reservaciones` confirmadas **UNION** `Solicitudes` confirmadas | Una confirmación aparece en el calendario al instante (criterio 2). Una sola regla de "fecha ocupada" sin duplicar datos. |
+| 3 | **`sp_Solicitud_Crear`**: también revisa `Reservaciones` confirmadas | La misma regla al crear: si la fecha está ocupada por cualquiera de las dos tablas → `4002`. |
+| 4 | **`sp_Solicitud_CambiarEstado`** (nuevo) `@Id, @AdminId, @Estado` | Confirmar: en una transacción la confirma y **rechaza automáticamente** las demás pendientes del mismo salón y fecha (criterios 1 y 4). Rechazar: solo esa; la fecha sigue libre (criterio 3). Lo expone la HU-18. |
+
+Reglas de `sp_Solicitud_CambiarEstado`:
+
+| Caso | Código |
+|---|---|
+| `@Estado` distinto de `confirmada` / `rechazada` | `1001` |
+| El usuario no existe o no es administrador | `1004` |
+| La solicitud no existe | `4001` |
+| El salón de la solicitud no es de ese administrador | `2002` |
+| La solicitud ya no está `pendiente` | **`4006`** (nuevo, HTTP 409) |
+| Confirmar con la fecha del evento ya pasada | `1001` |
+| La fecha ya está ocupada (solicitud o reservación confirmada), o dos confirmaciones simultáneas (`UPDLOCK, HOLDLOCK` + índice) | `4002` |
+
+Regresa la solicitud con su nuevo estado y la columna `SolicitudesRechazadas`, que indica cuántas pendientes
+se rechazaron solas.
+
+`Down()` de la 008 quita el SP nuevo y el índice, y restaura las versiones anteriores de
+`sp_Salon_Disponibilidad` (lote de `02_StoredProcedures.sql`) y `sp_Solicitud_Crear` (lote de
+`08_SolicitudesHU15.sql`). Ambos scripts van incrustados en el ensamblado: no hay copias a mano.
+
+### Pruebas
+
+- **`Database/10_PruebasHU17.sql`** crea sus propios datos de ejemplo (salón `[PruebaHU17]`, usuarios
+  `*@hu17.prueba`, fechas de junio de 2030). Luego ejecuta los criterios con los SP reales, muestra una tabla
+  de resultados, **borra todo lo que creó** y termina con `THROW` si algo falla. Solo para BD local o de prueba.
+- **Unitarias (sin BD):** 113 en verde. Incluyen la 008 en la prueba de versiones; Up = lotes del script 09;
+  índice idempotente y protegido; disponibilidad y crear con las dos tablas; `CambiarEstado` con su
+  transacción; `Down()` que restaura los SP anteriores; el `4006` → HTTP 409. `GlamSpaces.Migrations` al 100 %.
+- **Workflow Migraciones BD:** el rollback verifica ahora la 008. Además corre el script 09 dos veces y
+  `10_PruebasHU17.sql` en el contenedor.
+
+### Evidencias (LocalDB)
+
+#### Listar: la 008 pendiente — [`23_hu17_list_antes.txt`](evidencias/23_hu17_list_antes.txt)
+
+```text
+# Evidencia 23 — HU-17: listar (la 008 aparece pendiente)
+# Fecha: 2026-11-05 14:09:27 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: .\scripts\migraciones.ps1 listar
+#
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+202610291000: M005_CrearSolicitudes
+⌘ 202610291100: M006_AgregarTelefonoContactoSolicitudes (current)
+202610291200: M007_ProcedimientosSolicitudes (not applied)
+202611051000: M008_EstadoSolicitudesHU17 (not applied)
+Task completed.
+# Código de salida: 0
+```
+
+#### Subir (007 y 008) — [`24_hu17_migrate_up.txt`](evidencias/24_hu17_migrate_up.txt)
+
+Salida completa en el archivo; termina con `202611051000: M008_EstadoSolicitudesHU17 migrated`.
+
+#### Estructura y pruebas de los criterios — [`25_hu17_verificar_y_pruebas.txt`](evidencias/25_hu17_verificar_y_pruebas.txt)
+
+```text
+# Evidencia 25 — HU-17: estructura y pruebas de los criterios de aceptación (10_PruebasHU17.sql)
+# Fecha: 2026-11-05 14:10:04 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> Estructura
+
+Indice                                       Unico Filtro                  Columnas                       
+------                                       ----- ------                  --------                       
+UX_Solicitudes_Cliente_Salon_Fecha_Pendiente  True ([Estado]='pendiente')  ClienteId, SalonId, FechaEvento
+UX_Solicitudes_Confirmada                     True ([Estado]='confirmada') SalonId, FechaEvento
+(2 filas)
+
+StoredProcedure            Modificado          CambioHU17                 
+---------------            ----------          ----------                 
+sp_Salon_Disponibilidad    2026-11-05 14:09:33 lee Solicitudes confirmadas
+sp_Solicitud_CambiarEstado 2026-11-05 14:09:33                            
+sp_Solicitud_Crear         2026-11-05 14:09:33 revisa Reservaciones
+(3 filas)
+
+     Version Description                                                            
+     ------- -----------                                                            
+202610230900 Línea base: tablas, stored procedures e índices existentes             
+202610230910 Crea la tabla BusquedasFavoritas                                       
+202610230920 Agrega la columna Telefono a Salones                                   
+202610230930 Índice único (UsuarioId, SalonId) en BusquedasFavoritas                
+202610291000 HU-14: tabla Solicitudes con restricciones e índice único de pendientes
+202610291100 HU-16: columna TelefonoContacto en Solicitudes                         
+202610291200 HU-15: stored procedures de solicitudes                                
+202611051000 HU-17: confirmar o rechazar solicitudes y bloqueo de fecha
+(8 filas)
+
+>>> Pruebas de los criterios: .\scripts\migraciones.ps1 script -Archivo Database\10_PruebasHU17.sql
+Ejecutando Database\10_PruebasHU17.sql en [GlamSpacesMigraciones]
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 3       2 [PruebaHU17] Salón         9                         01/06/2030 12:00:00 a. m. Boda                   100 7710000001
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 5       2 [PruebaHU17] Salón        11                         08/06/2030 12:00:00 a. m. Cumpleaños              40 7710000003
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 6       2 [PruebaHU17] Salón        12                         08/06/2030 12:00:00 a. m. Graduación              60 7710000004
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+ 9       2 [PruebaHU17] Salón        11                         15/06/2030 12:00:00 a. m. Evento                  50 7710000009
+(1 filas)
+HU-17: 16 de 16 pruebas pasan. Datos de prueba borrados.
+
+ N Prueba                                                          Esperado                                 Obtenido                                                                         Resultado
+ - ------                                                          --------                                 --------                                                                         ---------
+ 1 CA1 · confirmar una de dos pendientes (código)                  0                                        0 Solicitud confirmada. Se rechazaron 1 solicitud(es) pendiente(s) de esa fecha. PASA     
+ 2 CA1 · la confirmada                                             confirmada                               confirmada                                                                       PASA     
+ 3 CA1 · la otra cambia sola                                       rechazada                                rechazada                                                                        PASA     
+ 4 CA2 · fecha confirmada en la disponibilidad                     2030-06-01                               2030-06-01                                                                       PASA     
+ 5 CA2 · crear otra solicitud en la fecha ocupada                  4002                                     4002 La fecha ya no está disponible.                                             PASA     
+ 6 CA3 · la solicitud rechazada                                    rechazada                                rechazada                                                                        PASA     
+ 7 CA3 · la fecha NO aparece ocupada                               sin 2030-06-08                           2030-06-01                                                                       PASA     
+ 8 CA3 · otro cliente aún puede pedir esa fecha                    0                                        0 Solicitud enviada correctamente.                                               PASA     
+ 9 CA4 · 4 solicitudes de la misma fecha, se confirma 1            1 confirmada (la elegida) y 3 rechazadas 1 confirmada(s), 3 rechazada(s), 0 pendiente(s)                                  PASA     
+10 CA4 · mensaje con las rechazadas                                ...Se rechazaron 3...                    Solicitud confirmada. Se rechazaron 3 solicitud(es) pendiente(s) de esa fecha.   PASA     
+11 Regla · 2a confirmada directa en BD (UX_Solicitudes_Confirmada) error 2601                               error 2601                                                                       PASA     
+12 Error · confirmar una solicitud ya atendida                     4006                                     4006 La solicitud ya fue atendida.                                               PASA     
+13 Error · otro administrador no puede confirmar                   2002                                     2002 No eres el dueño del salón de esta solicitud.                               PASA     
+14 Error · estado inválido                                         1001                                     1001 El estado debe ser "confirmada" o "rechazada".                              PASA     
+15 Consistencia · confirmar si hay reservación confirmada (HU-11)  4002 y sigue pendiente                   4002 · pendiente                                                                 PASA     
+16 Consistencia · crear solicitud si hay reservación confirmada    4002                                     4002 La fecha ya no está disponible.                                             PASA
+(16 filas)
+# Código de salida: 0
+```
+
+> 📸 **CAPTURA AQUÍ:** la tabla de resultados de `10_PruebasHU17.sql` con las 16 pruebas en `PASA`.
+
+#### Rollback de la 008 — [`26_hu17_rollback.txt`](evidencias/26_hu17_rollback.txt)
+
+```text
+>>> Verificación
+
+sp_Solicitud_CambiarEstado UX_Solicitudes_Confirmada Disponibilidad             CrearRevisa             
+-------------------------- ------------------------- --------------             -----------             
+NO existe                  NO existe                 solo reservaciones (HU-11) solo solicitudes (HU-15)
+(1 filas)
+
+     Version Description                                   
+     ------- -----------                                   
+202610291200 HU-15: stored procedures de solicitudes       
+202610291100 HU-16: columna TelefonoContacto en Solicitudes
+(2 filas)
+
+>>> .\scripts\migraciones.ps1 listar
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+202610291000: M005_CrearSolicitudes
+202610291100: M006_AgregarTelefonoContactoSolicitudes
+⌘ 202610291200: M007_ProcedimientosSolicitudes (current)
+202611051000: M008_EstadoSolicitudesHU17 (not applied)
+Task completed.
+# Código de salida: 0
+```
+
+#### Reaplicar — [`27_hu17_reaplicar.txt`](evidencias/27_hu17_reaplicar.txt)
+
+```text
+>>> Verificación
+
+sp_Solicitud_CambiarEstado UX_Solicitudes_Confirmada Disponibilidad              CrearRevisa                
+-------------------------- ------------------------- --------------              -----------                
+existe                     existe                    reservaciones + solicitudes solicitudes + reservaciones
+(1 filas)
+
+     Version Description                                               
+     ------- -----------                                               
+202611051000 HU-17: confirmar o rechazar solicitudes y bloqueo de fecha
+202610291200 HU-15: stored procedures de solicitudes
+(2 filas)
+# Código de salida: 0
+```
+
+#### Script 09 sobre la BD migrada, como en Azure — [`28_hu17_script09_como_azure.txt`](evidencias/28_hu17_script09_como_azure.txt)
+
+```text
+# Evidencia 28 — HU-17: script 09 sobre la BD migrada (como en Azure) y pruebas
+# Fecha: 2026-11-05 14:10:33 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> El script 09 (el que se corre en Azure) sobre la BD ya migrada, dos veces: no cambia nada ni falla
+>>> corrida 1: .\scripts\migraciones.ps1 script -Archivo Database\09_EstadoSolicitudesHU17.sql
+Ejecutando Database\09_EstadoSolicitudesHU17.sql en [GlamSpacesMigraciones]
+El índice UX_Solicitudes_Confirmada ya existe.
+>>> corrida 2: .\scripts\migraciones.ps1 script -Archivo Database\09_EstadoSolicitudesHU17.sql
+Ejecutando Database\09_EstadoSolicitudesHU17.sql en [GlamSpacesMigraciones]
+El índice UX_Solicitudes_Confirmada ya existe.
+
+...
+HU-17: 16 de 16 pruebas pasan. Datos de prueba borrados.
+```
+
+#### Reset desde cero: 001 a 008 y pruebas — [`29_hu17_reset_desde_cero.txt`](evidencias/29_hu17_reset_desde_cero.txt)
+
+Salida completa en el archivo (más de 1200 líneas). Termina con la 008 en `(current)` y
+`HU-17: 16 de 16 pruebas pasan. Datos de prueba borrados.`
+
+---
+
+## 15. Capturas de pantalla
 
 Lugares marcados con **CAPTURA AQUÍ** en este documento:
 
@@ -2685,6 +2932,7 @@ Lugares marcados con **CAPTURA AQUÍ** en este documento:
 5. Sección 11: workflow "Migraciones BD" en verde en GitHub Actions.
 6. Sección 12 (HU-14): la tabla `Solicitudes` en SSMS y el reset con la 005 en `(current)`.
 7. Sección 13 (HU-16): el script 07 en `glamspaces-db` con la columna `TelefonoContacto`.
+8. Sección 14 (HU-17): la tabla de resultados de `10_PruebasHU17.sql` con las 16 pruebas en `PASA`.
 
 Opcionales:
 
