@@ -1,0 +1,57 @@
+# Evidencia 28 — HU-17: script 09 sobre la BD migrada (como en Azure) y pruebas
+# Fecha: 2026-11-05 14:10:33 (hora local)
+# Servidor / BD: (localdb)\MSSQLLocalDB / GlamSpacesMigraciones
+# Comando: ver cada paso abajo
+#
+>>> El script 09 (el que se corre en Azure) sobre la BD ya migrada, dos veces: no cambia nada ni falla
+>>> corrida 1: .\scripts\migraciones.ps1 script -Archivo Database\09_EstadoSolicitudesHU17.sql
+Ejecutando Database\09_EstadoSolicitudesHU17.sql en [GlamSpacesMigraciones]
+El índice UX_Solicitudes_Confirmada ya existe.
+>>> corrida 2: .\scripts\migraciones.ps1 script -Archivo Database\09_EstadoSolicitudesHU17.sql
+Ejecutando Database\09_EstadoSolicitudesHU17.sql en [GlamSpacesMigraciones]
+El índice UX_Solicitudes_Confirmada ya existe.
+
+>>> Las pruebas siguen pasando
+Ejecutando Database\10_PruebasHU17.sql en [GlamSpacesMigraciones]
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+12       3 [PruebaHU17] Salón        15                         01/06/2030 12:00:00 a. m. Boda                   100 7710000001
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+14       3 [PruebaHU17] Salón        17                         08/06/2030 12:00:00 a. m. Cumpleaños              40 7710000003
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+15       3 [PruebaHU17] Salón        18                         08/06/2030 12:00:00 a. m. Graduación              60 7710000004
+(1 filas)
+
+Id SalonId NombreSalon        ClienteId PaqueteId NombrePaquete FechaEvento               TipoEvento NumeroInvitados TelefonoContacto
+-- ------- -----------        --------- --------- ------------- -----------               ---------- --------------- ----------------
+18       3 [PruebaHU17] Salón        17                         15/06/2030 12:00:00 a. m. Evento                  50 7710000009
+(1 filas)
+HU-17: 16 de 16 pruebas pasan. Datos de prueba borrados.
+
+ N Prueba                                                          Esperado                                 Obtenido                                                                         Resultado
+ - ------                                                          --------                                 --------                                                                         ---------
+ 1 CA1 · confirmar una de dos pendientes (código)                  0                                        0 Solicitud confirmada. Se rechazaron 1 solicitud(es) pendiente(s) de esa fecha. PASA     
+ 2 CA1 · la confirmada                                             confirmada                               confirmada                                                                       PASA     
+ 3 CA1 · la otra cambia sola                                       rechazada                                rechazada                                                                        PASA     
+ 4 CA2 · fecha confirmada en la disponibilidad                     2030-06-01                               2030-06-01                                                                       PASA     
+ 5 CA2 · crear otra solicitud en la fecha ocupada                  4002                                     4002 La fecha ya no está disponible.                                             PASA     
+ 6 CA3 · la solicitud rechazada                                    rechazada                                rechazada                                                                        PASA     
+ 7 CA3 · la fecha NO aparece ocupada                               sin 2030-06-08                           2030-06-01                                                                       PASA     
+ 8 CA3 · otro cliente aún puede pedir esa fecha                    0                                        0 Solicitud enviada correctamente.                                               PASA     
+ 9 CA4 · 4 solicitudes de la misma fecha, se confirma 1            1 confirmada (la elegida) y 3 rechazadas 1 confirmada(s), 3 rechazada(s), 0 pendiente(s)                                  PASA     
+10 CA4 · mensaje con las rechazadas                                ...Se rechazaron 3...                    Solicitud confirmada. Se rechazaron 3 solicitud(es) pendiente(s) de esa fecha.   PASA     
+11 Regla · 2a confirmada directa en BD (UX_Solicitudes_Confirmada) error 2601                               error 2601                                                                       PASA     
+12 Error · confirmar una solicitud ya atendida                     4006                                     4006 La solicitud ya fue atendida.                                               PASA     
+13 Error · otro administrador no puede confirmar                   2002                                     2002 No eres el dueño del salón de esta solicitud.                               PASA     
+14 Error · estado inválido                                         1001                                     1001 El estado debe ser "confirmada" o "rechazada".                              PASA     
+15 Consistencia · confirmar si hay reservación confirmada (HU-11)  4002 y sigue pendiente                   4002 · pendiente                                                                 PASA     
+16 Consistencia · crear solicitud si hay reservación confirmada    4002                                     4002 La fecha ya no está disponible.                                             PASA
+(16 filas)
+# Código de salida: 0

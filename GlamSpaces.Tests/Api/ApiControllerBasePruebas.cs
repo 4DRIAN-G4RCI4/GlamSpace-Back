@@ -27,6 +27,7 @@ public class ApiControllerBasePruebas
     [InlineData(CodigosError.NoEsCliente, StatusCodes.Status400BadRequest)]
     [InlineData(CodigosError.SolicitudDuplicada, StatusCodes.Status409Conflict)]
     [InlineData(CodigosError.SolicitudAjena, StatusCodes.Status403Forbidden)]
+    [InlineData(CodigosError.SolicitudYaAtendida, StatusCodes.Status409Conflict)]
     [InlineData(CodigosError.ErrorInterno, StatusCodes.Status500InternalServerError)]
     public void Responder_TraduceCadaCodigoAlStatusHttpCorrecto(int codigo, int statusEsperado)
     {

@@ -46,3 +46,34 @@ public class SolicitudResponse
     public string Estado { get; set; } = string.Empty; // "pendiente", "confirmada" o "rechazada"
     public DateTime FechaCreacion { get; set; } // UTC
 }
+
+// POST /api/solicitudes/aceptar y /rechazar (HU-18). Solo el administrador dueño del salón.
+public class AtenderSolicitudRequest
+{
+    public int Id { get; set; }
+    // TODO: tomar adminId del JWT cuando exista la autenticación
+    public int AdminId { get; set; }
+}
+
+// POST /api/solicitudes/listarPorSalon (HU-18). Ordenadas por fecha del evento (las más próximas primero).
+public class ListarSolicitudesSalonRequest : PaginacionRequest
+{
+    public int SalonId { get; set; }
+    // TODO: tomar adminId del JWT cuando exista la autenticación
+    public int AdminId { get; set; }
+    public string? Estado { get; set; } // "pendiente" (por defecto), "confirmada", "rechazada" o "todas"
+}
+
+// Solicitud vista por el administrador del salón: agrega quién la pidió y el precio del paquete.
+public class SolicitudAdminResponse : SolicitudResponse
+{
+    public string NombreCliente { get; set; } = string.Empty;
+    public decimal? PrecioPaquete { get; set; } // null si no eligió paquete
+}
+
+// Respuesta de aceptar/rechazar: la solicitud con su nuevo estado y cuántas pendientes de la
+// misma fecha se rechazaron solas al aceptar (HU-17). Al rechazar siempre es 0.
+public class SolicitudAtendidaResponse : SolicitudResponse
+{
+    public int SolicitudesRechazadas { get; set; }
+}

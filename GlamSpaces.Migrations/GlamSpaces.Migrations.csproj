@@ -17,6 +17,11 @@
     <EmbeddedResource Include="..\Database\01_Tablas.sql" LogicalName="Database.01_Tablas.sql" />
     <EmbeddedResource Include="..\Database\02_StoredProcedures.sql" LogicalName="Database.02_StoredProcedures.sql" />
     <EmbeddedResource Include="..\Database\03_Indices.sql" LogicalName="Database.03_Indices.sql" />
+    <!-- 008 (HU-17) ejecuta el 09 y, en su Down(), restaura SP de 02 y 08. -->
+    <EmbeddedResource Include="..\Database\08_SolicitudesHU15.sql" LogicalName="Database.08_SolicitudesHU15.sql" />
+    <EmbeddedResource Include="..\Database\09_EstadoSolicitudesHU17.sql" LogicalName="Database.09_EstadoSolicitudesHU17.sql" />
+    <!-- 009 (HU-18) ejecuta el 11. -->
+    <EmbeddedResource Include="..\Database\11_SolicitudesAdminHU18.sql" LogicalName="Database.11_SolicitudesAdminHU18.sql" />
   </ItemGroup>
 
   <!-- Permite que GlamSpaces.Tests pruebe las clases internal de este proyecto. -->
