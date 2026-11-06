@@ -28,6 +28,8 @@ public class MigracionesPruebas
     [InlineData(typeof(M005_CrearSolicitudes), 202610291000)]
     [InlineData(typeof(M006_AgregarTelefonoContactoSolicitudes), 202610291100)]
     [InlineData(typeof(M007_ProcedimientosSolicitudes), 202610291200)]
+    [InlineData(typeof(M008_EstadoSolicitudesHU17), 202611051000)]
+    [InlineData(typeof(M009_SolicitudesAdminHU18), 202611051100)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -284,5 +286,121 @@ public class MigracionesPruebas
 
         // Afirmar
         Assert.Equal(ProcedimientosHu15.Select(sp => $"DROP PROCEDURE IF EXISTS dbo.{sp};"), sentencias);
+    }
+
+    private static List<string> SentenciasUpM008() =>
+        ExpresionesUp(new M008_EstadoSolicitudesHU17()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+
+    [Fact]
+    public void M008_Up_EjecutaElScript09LotePorLote()
+    {
+        // Actuar
+        var sentencias = SentenciasUpM008();
+
+        // Afirmar: mismo contenido que Database/09_EstadoSolicitudesHU17.sql, sin copias a mano ni GO.
+        Assert.Equal(ScriptsSql.Lotes(M008_EstadoSolicitudesHU17.ScriptHu17), sentencias);
+        Assert.DoesNotContain(sentencias, s => s.Contains("\nGO"));
+    }
+
+    [Fact]
+    public void M008_Up_CreaElIndiceUnicoDeConfirmadasSoloSiNoHayRepetidas()
+    {
+        // Actuar
+        var indice = Assert.Single(SentenciasUpM008(), s => s.Contains("CREATE UNIQUE NONCLUSTERED INDEX UX_Solicitudes_Confirmada"));
+
+        // Afirmar: idempotente y protegido contra datos que ya violen la regla.
+        Assert.Contains("IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UX_Solicitudes_Confirmada'", indice);
+        Assert.Contains("HAVING COUNT(*) > 1", indice);
+        Assert.Contains("THROW 50010", indice);
+        Assert.Contains("ON dbo.Solicitudes (SalonId, FechaEvento)", indice);
+        Assert.Contains("WHERE Estado = 'confirmada';", indice);
+    }
+
+    [Fact]
+    public void M008_Up_LaDisponibilidadYCrearCuentanSolicitudesYReservacionesConfirmadas()
+    {
+        // Actuar
+        var sentencias = SentenciasUpM008();
+        var disponibilidad = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Salon_Disponibilidad"));
+        var crear = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Solicitud_Crear"));
+
+        // Afirmar
+        Assert.Contains("FROM Reservaciones", disponibilidad);
+        Assert.Contains("UNION", disponibilidad);
+        Assert.Contains("FROM Solicitudes", disponibilidad);
+        Assert.Contains("FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)", crear);
+        Assert.Contains("FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)", crear);
+    }
+
+    [Fact]
+    public void M008_Up_CambiarEstadoConfirmaYRechazaLasDemasPendientesEnUnaTransaccion()
+    {
+        // Actuar
+        var cambiar = Assert.Single(SentenciasUpM008(), s => s.Contains("CREATE OR ALTER PROCEDURE sp_Solicitud_CambiarEstado"));
+
+        // Afirmar
+        Assert.Contains("@Estado NOT IN ('confirmada', 'rechazada')", cambiar);
+        Assert.Contains("@Codigo = 4006", cambiar);
+        Assert.Contains("@Codigo = 2002", cambiar);
+        Assert.Contains("BEGIN TRAN;", cambiar);
+        Assert.Contains("UPDATE Solicitudes SET Estado = 'rechazada'\n            WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'pendiente' AND Id <> @Id;",
+                        cambiar.Replace("\r\n", "\n"));
+        Assert.Contains("ERROR_NUMBER() IN (2601, 2627)", cambiar);
+        Assert.Contains("@Rechazadas AS SolicitudesRechazadas", cambiar);
+    }
+
+    [Fact]
+    public void M008_Down_QuitaLoNuevoYRestauraLosProcedimientosAnteriores()
+    {
+        // Actuar
+        var sentencias = ExpresionesDown(new M008_EstadoSolicitudesHU17())
+            .Cast<ExecuteSqlStatementExpression>()
+            .Select(e => e.SqlStatement)
+            .ToList();
+
+        // Afirmar: SP e índice nuevos fuera; disponibilidad como en la HU-11 y crear como en la HU-15.
+        Assert.Equal(4, sentencias.Count);
+        Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Solicitud_CambiarEstado;", sentencias[0]);
+        Assert.Equal("DROP INDEX IF EXISTS UX_Solicitudes_Confirmada ON dbo.Solicitudes;", sentencias[1]);
+        Assert.Contains("CREATE OR ALTER PROCEDURE sp_Salon_Disponibilidad", sentencias[2]);
+        Assert.DoesNotContain("FROM Solicitudes", sentencias[2]);
+        Assert.Contains("CREATE OR ALTER PROCEDURE sp_Solicitud_Crear", sentencias[3]);
+        Assert.DoesNotContain("Reservaciones", sentencias[3]);
+        Assert.Contains(sentencias[2], ScriptsSql.Lotes(M008_EstadoSolicitudesHU17.ScriptBase));
+        Assert.Contains(sentencias[3], ScriptsSql.Lotes(M008_EstadoSolicitudesHU17.ScriptHu15));
+    }
+
+    [Fact]
+    public void M008_LoteDelProcedimiento_FallaSiElScriptNoTieneEseProcedimiento()
+    {
+        // Actuar / Afirmar: Single() exige exactamente un lote con ese SP.
+        Assert.Throws<InvalidOperationException>(() =>
+            M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M008_EstadoSolicitudesHU17.ScriptHu15, "sp_No_Existe"));
+    }
+
+    [Fact]
+    public void M009_Up_EjecutaElScript11ConElListadoPorSalonOrdenadoPorFecha()
+    {
+        // Actuar
+        var sentencias = ExpresionesUp(new M009_SolicitudesAdminHU18()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+        var listar = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorSalon"));
+
+        // Afirmar: mismo contenido que el script; solo el dueño; pendientes por defecto; por fecha del evento.
+        Assert.Equal(ScriptsSql.Lotes(M009_SolicitudesAdminHU18.ScriptHu18), sentencias);
+        Assert.Contains("ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), 'pendiente')", listar);
+        Assert.Contains("@Codigo = 2002", listar);
+        Assert.Contains("u.NombreCompleto AS NombreCliente", listar);
+        Assert.Contains("p.Precio AS PrecioPaquete", listar);
+        Assert.Contains("ORDER BY s.FechaEvento, s.Id", listar);
+    }
+
+    [Fact]
+    public void M009_Down_BorraElListadoPorSalon()
+    {
+        // Actuar
+        var sentencia = Assert.Single(ExpresionesDown(new M009_SolicitudesAdminHU18()).Cast<ExecuteSqlStatementExpression>()).SqlStatement;
+
+        // Afirmar
+        Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Solicitud_ListarPorSalon;", sentencia);
     }
 }

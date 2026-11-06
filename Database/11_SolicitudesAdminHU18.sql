@@ -1,0 +1,75 @@
+/* =========================================================================
+   GlamSpaces — Solicitudes de un salón para su administrador (Sprint 6 — HU-18)
+   Correr DESPUÉS de 09_EstadoSolicitudesHU17.sql. Idempotente (CREATE OR ALTER).
+   La migración M009_SolicitudesAdminHU18 ejecuta este mismo script.
+
+   Aceptar y rechazar usan sp_Solicitud_CambiarEstado (HU-17); aquí solo va el listado.
+   ========================================================================= */
+
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
+-- Solicitudes de UN salón, solo para el administrador dueño, ordenadas por fecha del evento
+-- (las más próximas primero). @Estado: 'pendiente' (por defecto), 'confirmada', 'rechazada' o 'todas'.
+-- Incluye el nombre del cliente y el precio del paquete para el panel del administrador (HU-19).
+-- Siempre regresa los 2 result sets (paginado y página), como sp_Solicitud_ListarPorCliente;
+-- con error, la página va vacía y el paginado en 0.
+CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorSalon
+    @SalonId      INT,
+    @AdminId      INT,
+    @Estado       NVARCHAR(20) = NULL,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+    SET @Estado = ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), 'pendiente');
+
+    DECLARE @Total INT = 0;
+    SET @Codigo = 0;
+
+    IF @Estado NOT IN ('pendiente', 'confirmada', 'rechazada', 'todas')
+        SELECT @Codigo = 1001, @Mensaje = N'El estado debe ser pendiente, confirmada, rechazada o todas.';
+    ELSE IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+        SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.';
+    ELSE IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+        SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.';
+    ELSE IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId AND AdminId = @AdminId)
+        SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño de este salón.';
+    ELSE
+    BEGIN
+        SET @Total = (SELECT COUNT(*) FROM Solicitudes
+                      WHERE SalonId = @SalonId AND (@Estado = 'todas' OR Estado = @Estado));
+        SELECT @Mensaje = CASE WHEN @Total = 0 THEN N'El salón no tiene solicitudes con ese estado.'
+                               ELSE N'Consulta exitosa.' END;
+    END
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, u.NombreCompleto AS NombreCliente,
+           s.PaqueteId, p.NombrePaquete, p.Precio AS PrecioPaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    JOIN Usuarios u ON u.Id = s.ClienteId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.SalonId = @SalonId AND @Codigo = 0
+      AND (@Estado = 'todas' OR s.Estado = @Estado)
+    ORDER BY s.FechaEvento, s.Id
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+END
+GO

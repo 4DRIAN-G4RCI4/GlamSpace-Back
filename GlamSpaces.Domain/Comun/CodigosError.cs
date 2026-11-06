@@ -29,6 +29,7 @@ public static class CodigosError
     public const int NoEsCliente = 4003;
     public const int SolicitudDuplicada = 4004;
     public const int SolicitudAjena = 4005;
+    public const int SolicitudYaAtendida = 4006; // HU-17: ya no está pendiente (se confirmó o rechazó)
 
     // 5xxx: errores del servidor
     public const int ErrorInterno = 5000;
