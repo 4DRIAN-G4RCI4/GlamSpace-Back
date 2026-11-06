@@ -1,4 +1,5 @@
 global using System.Data;
+global using System.Data.Common;
 global using System.Net;
 global using System.Net.Http.Json;
 global using System.Text;
@@ -23,6 +24,7 @@ global using Microsoft.AspNetCore.Http;
 global using Microsoft.AspNetCore.Mvc;
 global using Microsoft.AspNetCore.Mvc.Testing;
 global using Microsoft.AspNetCore.TestHost;
+global using Microsoft.Data.SqlClient;
 global using Microsoft.Extensions.DependencyInjection;
 global using NSubstitute;
 global using NSubstitute.ExceptionExtensions;

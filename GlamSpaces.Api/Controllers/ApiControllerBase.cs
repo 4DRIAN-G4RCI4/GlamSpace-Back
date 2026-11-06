@@ -13,7 +13,7 @@ public abstract class ApiControllerBase : ControllerBase
         CodigosError.UsuarioNoEncontrado or CodigosError.SalonNoEncontrado or CodigosError.PaqueteNoEncontrado
             or CodigosError.SolicitudNoEncontrada => StatusCodes.Status404NotFound,
         CodigosError.CorreoDuplicado or CodigosError.FechaNoDisponible or CodigosError.SolicitudDuplicada
-            => StatusCodes.Status409Conflict,
+            or CodigosError.SolicitudYaAtendida => StatusCodes.Status409Conflict,
         CodigosError.ErrorInterno => StatusCodes.Status500InternalServerError,
         _ => StatusCodes.Status400BadRequest,
     }, respuesta);

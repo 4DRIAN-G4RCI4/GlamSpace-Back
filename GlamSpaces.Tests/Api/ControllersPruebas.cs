@@ -379,4 +379,117 @@ public class ControllersPruebas
         Assert.Empty(paginado.Datos!);
         Assert.Equal("No tienes solicitudes registradas.", paginado.Mensaje);
     }
+
+    // ---------- Solicitudes del administrador (HU-18) ----------
+
+    [Fact]
+    public async Task Solicitudes_Aceptar_Propia_Regresa200ConfirmadaYLasRechazadas()
+    {
+        // Arreglar (CA1)
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        var request = new AtenderSolicitudRequest { Id = 7, AdminId = 3 };
+        repo.Aceptar(request).Returns(Exito(new SolicitudAtendidaResponse { Id = 7, Estado = "confirmada", SolicitudesRechazadas = 1 }));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Aceptar(request));
+
+        // Afirmar
+        Assert.Equal(200, resultado.StatusCode);
+        var solicitud = Assert.IsType<RespuestaApi<SolicitudAtendidaResponse>>(resultado.Value).Datos!;
+        Assert.Equal("confirmada", solicitud.Estado);
+        Assert.Equal(1, solicitud.SolicitudesRechazadas);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Rechazar_Propia_Regresa200Rechazada()
+    {
+        // Arreglar (CA2)
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        var request = new AtenderSolicitudRequest { Id = 7, AdminId = 3 };
+        repo.Rechazar(request).Returns(Exito(new SolicitudAtendidaResponse { Id = 7, Estado = "rechazada" }));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Rechazar(request));
+
+        // Afirmar
+        Assert.Equal(200, resultado.StatusCode);
+        Assert.Equal("rechazada", Assert.IsType<RespuestaApi<SolicitudAtendidaResponse>>(resultado.Value).Datos!.Estado);
+        await repo.DidNotReceive().Aceptar(Arg.Any<AtenderSolicitudRequest>());
+    }
+
+    [Fact]
+    public async Task Solicitudes_Aceptar_DeOtroSalon_Regresa403()
+    {
+        // Arreglar (CA4)
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        repo.Aceptar(Arg.Any<AtenderSolicitudRequest>())
+            .Returns(RespuestaApi<SolicitudAtendidaResponse>.Error(CodigosError.NoEsDueno, "No eres el dueño del salón de esta solicitud."));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Aceptar(new AtenderSolicitudRequest { Id = 7, AdminId = 9 }));
+
+        // Afirmar
+        Assert.Equal(403, resultado.StatusCode);
+        Assert.Equal(CodigosError.NoEsDueno, Assert.IsType<RespuestaApi<SolicitudAtendidaResponse>>(resultado.Value).Codigo);
+    }
+
+    [Fact]
+    public async Task Solicitudes_Aceptar_YaAtendida_Regresa409()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        repo.Aceptar(Arg.Any<AtenderSolicitudRequest>())
+            .Returns(RespuestaApi<SolicitudAtendidaResponse>.Error(CodigosError.SolicitudYaAtendida, "La solicitud ya fue atendida."));
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).Aceptar(new AtenderSolicitudRequest { Id = 7, AdminId = 3 }));
+
+        // Afirmar
+        Assert.Equal(409, resultado.StatusCode);
+    }
+
+    [Fact]
+    public async Task Solicitudes_ListarPorSalon_RegresaLasPendientesComoLasManda()
+    {
+        // Arreglar (CA3): el orden por fecha del evento lo da el SP; el controller no lo altera.
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        var request = new ListarSolicitudesSalonRequest { SalonId = 1, AdminId = 3 };
+        repo.ListarPorSalon(request).Returns(new RespuestaPaginada<SolicitudAdminResponse>
+        {
+            Datos =
+            [
+                new SolicitudAdminResponse { Id = 9, NombreCliente = "María", FechaEvento = new DateTime(2026, 12, 5), Estado = "pendiente" },
+                new SolicitudAdminResponse { Id = 8, NombreCliente = "Roberto", FechaEvento = new DateTime(2026, 12, 12), Estado = "pendiente" },
+            ],
+            TotalRegistros = 2,
+        });
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).ListarPorSalon(request));
+
+        // Afirmar
+        Assert.Equal(200, resultado.StatusCode);
+        var paginado = Assert.IsType<RespuestaPaginada<SolicitudAdminResponse>>(resultado.Value);
+        Assert.Equal([9, 8], paginado.Datos!.Select(s => s.Id));
+        await repo.Received(1).ListarPorSalon(request);
+    }
+
+    [Fact]
+    public async Task Solicitudes_ListarPorSalon_DeOtroAdministrador_Regresa403()
+    {
+        // Arreglar
+        var repo = Substitute.For<ISolicitudRepositorio>();
+        repo.ListarPorSalon(Arg.Any<ListarSolicitudesSalonRequest>()).Returns(new RespuestaPaginada<SolicitudAdminResponse>
+        {
+            Codigo = CodigosError.NoEsDueno,
+            Mensaje = "No eres el dueño de este salón.",
+            Datos = [],
+        });
+
+        // Actuar
+        var resultado = Resultado(await new SolicitudesController(repo).ListarPorSalon(new ListarSolicitudesSalonRequest { SalonId = 1, AdminId = 9 }));
+
+        // Afirmar
+        Assert.Equal(403, resultado.StatusCode);
+    }
 }
