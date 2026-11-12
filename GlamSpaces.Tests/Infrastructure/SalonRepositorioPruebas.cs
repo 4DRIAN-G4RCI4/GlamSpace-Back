@@ -48,4 +48,86 @@ public class SalonRepositorioPruebas
         Assert.Equal(CodigosError.SalonNoEncontrado, r.Codigo);
         Assert.Null(r.Datos);
     }
+
+    // HU-07 (fotos): la búsqueda trae hasta 5 fotos por salón en fotosPreview (tercer result set).
+    private static DataTable Paginado(int total) =>
+        ConexionFalsa.Tabla(("TotalRegistros", total), ("TotalPaginas", 1), ("Pagina", 1), ("TamanoPagina", 10));
+
+    private static DataTable Pagina(params (int Id, string Nombre, string? Foto)[] salones) =>
+        ConexionFalsa.Tabla(salones.Select(s => new (string, object?)[]
+        {
+            ("Id", s.Id), ("Nombre", s.Nombre), ("Zona", "Tula"), ("Capacidad", 100),
+            ("PrecioDesde", 5000m), ("FotoPrincipal", s.Foto),
+        }));
+
+    [Fact]
+    public async Task Buscar_AsignaFotosPreviewACadaSalonEnElOrdenDelSp()
+    {
+        // Arreglar: dos salones; el 7 con 3 fotos y el 8 con 1 (el SP ya limita a 5 por salón)
+        var fotos = ConexionFalsa.Tabla(
+        [
+            [("SalonId", 7), ("Url", "https://x/7/a.jpg")],
+            [("SalonId", 7), ("Url", "https://x/7/b.jpg")],
+            [("SalonId", 7), ("Url", "https://x/7/c.jpg")],
+            [("SalonId", 8), ("Url", "https://x/8/a.jpg")],
+        ]);
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.",
+            Paginado(2), Pagina((7, "Jardín", "https://x/7/a.jpg"), (8, "Terraza", "https://x/8/a.jpg")), fotos);
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Buscar(new BuscarSalonesRequest());
+
+        // Afirmar
+        Assert.Equal("sp_Salon_Buscar", conexion.ComandoEjecutado);
+        Assert.True(r.Exito);
+        Assert.Equal(2, r.TotalRegistros);
+        Assert.Equal(["https://x/7/a.jpg", "https://x/7/b.jpg", "https://x/7/c.jpg"], r.Datos![0].FotosPreview);
+        Assert.Equal(["https://x/8/a.jpg"], r.Datos[1].FotosPreview);
+        Assert.Equal("https://x/7/a.jpg", r.Datos[0].FotoPrincipal);
+        Assert.Equal(r.Datos[0].FotoPrincipal, r.Datos[0].FotosPreview[0]);
+    }
+
+    [Fact]
+    public async Task Buscar_SalonSinFotos_FotosPreviewVaciaYFotoPrincipalNula()
+    {
+        var fotos = ConexionFalsa.Tabla(("SalonId", 8), ("Url", "https://x/8/a.jpg"));
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.",
+            Paginado(2), Pagina((7, "Sin fotos", null), (8, "Con foto", "https://x/8/a.jpg")), fotos);
+
+        var r = await new SalonRepositorio(conexion).Buscar(new BuscarSalonesRequest());
+
+        Assert.Empty(r.Datos![0].FotosPreview);
+        Assert.Null(r.Datos[0].FotoPrincipal);
+        Assert.Single(r.Datos[1].FotosPreview);
+    }
+
+    [Fact]
+    public async Task Buscar_ConElSpAnteriorSinTercerResultSet_FotosPreviewVaciaYNadaSeRompe()
+    {
+        // Arreglar: el SP viejo solo regresa paginado y página (2 result sets)
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.",
+            Paginado(1), Pagina((7, "Jardín", "https://x/7/a.jpg")));
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Buscar(new BuscarSalonesRequest());
+
+        // Afirmar
+        Assert.True(r.Exito);
+        Assert.Equal("https://x/7/a.jpg", Assert.Single(r.Datos!).FotoPrincipal);
+        Assert.Empty(r.Datos[0].FotosPreview);
+    }
+
+    [Fact]
+    public async Task Buscar_SinResultados_ListaVaciaYExito()
+    {
+        var conexion = new ConexionFalsa().Responder(0, "No se encontraron salones con esos filtros.",
+            Paginado(0), Vacia(Pagina((1, "x", null))), Vacia(ConexionFalsa.Tabla(("SalonId", 1), ("Url", "x"))));
+
+        var r = await new SalonRepositorio(conexion).Buscar(new BuscarSalonesRequest { CapacidadMinima = 100000 });
+
+        Assert.True(r.Exito);
+        Assert.Empty(r.Datos!);
+    }
+
+    private static DataTable Vacia(DataTable t) { t.Rows.Clear(); return t; }
 }

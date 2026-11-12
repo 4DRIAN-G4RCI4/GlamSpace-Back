@@ -442,7 +442,11 @@ Respuesta (formato paginado estándar):
       "zona": "Tula de Allende, Hgo.",
       "capacidad": 150,
       "precioDesde": 8500.00,
-      "fotoPrincipal": "https://glamspacesfrontsa.z41.web.core.windows.net/img/salon-jardin-1.jpg"
+      "fotoPrincipal": "https://glamspacesfrontsa.z41.web.core.windows.net/img/salon-jardin-1.jpg",
+      "fotosPreview": [
+        "https://glamspacesfrontsa.z41.web.core.windows.net/img/salon-jardin-1.jpg",
+        "https://glamspacesfrontsa.z41.web.core.windows.net/img/salon-jardin-2.jpg"
+      ]
     }
   ]
 }
@@ -450,6 +454,7 @@ Respuesta (formato paginado estándar):
 
 - `precioDesde`: precio del paquete más barato del salón.
 - `fotoPrincipal`: la primera foto del salón; `null` si no tiene.
+- `fotosPreview` (HU-07 fotos): hasta 5 URLs del salón en el mismo orden que `fotos` del detalle (la primera es `fotoPrincipal`), para el carrusel de la tarjeta; `[]` si no tiene fotos. Es un campo **nuevo**: `fotoPrincipal` y el resto de la respuesta no cambian. Sale de una sola consulta por página (`sp_Salon_Buscar` regresa un tercer result set con las fotos de los salones de la página). Producción se actualiza corriendo `Database/13_FotosPreviewBuscar.sql`; mientras no se corra, la API responde `fotosPreview: []`.
 
 ### Reglas
 

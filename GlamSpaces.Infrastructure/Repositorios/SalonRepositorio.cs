@@ -86,7 +86,30 @@ public class SalonRepositorio : ISalonRepositorio
             request.Pagina,
             request.TamanoPagina,
         });
-        return await _db.Paginado<SalonBusquedaResponse>("sp_Salon_Buscar", p);
+
+        // Result sets: paginado, salones de la página y (desde el script 13) las fotos de vista previa
+        // de esos salones, ya limitadas a 5 por salón. Si el SP todavía es el anterior no hay tercer
+        // result set y fotosPreview queda vacío, así que el orden del deploy no importa.
+        RespuestaPaginada<SalonBusquedaResponse> respuesta;
+        using (var resultados = await _db.QueryMultipleAsync(
+            "sp_Salon_Buscar", p, commandType: CommandType.StoredProcedure))
+        {
+            respuesta = await resultados.ReadFirstAsync<RespuestaPaginada<SalonBusquedaResponse>>();
+            respuesta.Datos = (await resultados.ReadAsync<SalonBusquedaResponse>()).ToList();
+
+            if (!resultados.IsConsumed)
+            {
+                var fotos = (await resultados.ReadAsync<FotoPreviewFila>()).ToLookup(f => f.SalonId, f => f.Url);
+                foreach (var salon in respuesta.Datos)
+                {
+                    salon.FotosPreview = fotos[salon.Id].Take(5).ToList();
+                }
+            }
+        }
+
+        respuesta.Codigo = p.Codigo();
+        respuesta.Mensaje = p.Mensaje();
+        return respuesta;
     }
 
     public async Task<RespuestaApi<DisponibilidadResponse>> Disponibilidad(DisponibilidadRequest request)
@@ -107,4 +130,11 @@ public class SalonRepositorio : ISalonRepositorio
         };
         return RespuestaApi<DisponibilidadResponse>.Ok(disponibilidad, p.Mensaje());
     }
+}
+
+// Renglón del tercer result set de sp_Salon_Buscar: una foto de vista previa de un salón de la página.
+internal sealed class FotoPreviewFila
+{
+    public int SalonId { get; set; }
+    public string Url { get; set; } = string.Empty;
 }
