@@ -113,8 +113,9 @@ public class SalonRepositorioPruebas
 
         // Afirmar
         Assert.True(r.Exito);
-        Assert.Equal("https://x/7/a.jpg", Assert.Single(r.Datos!).FotoPrincipal);
-        Assert.Empty(r.Datos[0].FotosPreview);
+        var salon = Assert.Single(r.Datos!);
+        Assert.Equal("https://x/7/a.jpg", salon.FotoPrincipal);
+        Assert.Empty(salon.FotosPreview);
     }
 
     [Fact]
