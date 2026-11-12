@@ -102,4 +102,8 @@ public class SalonBusquedaResponse
     public int Capacidad { get; set; }
     public decimal PrecioDesde { get; set; } // precio del paquete más barato
     public string? FotoPrincipal { get; set; } // URL de la primera foto; null si no tiene
+
+    // Hasta 5 URLs del salón, en el mismo orden que `fotos` del detalle (la primera es FotoPrincipal),
+    // para el carrusel de la tarjeta. Vacío si el salón no tiene fotos.
+    public List<string> FotosPreview { get; set; } = new();
 }

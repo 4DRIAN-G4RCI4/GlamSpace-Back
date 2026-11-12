@@ -31,6 +31,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M008_EstadoSolicitudesHU17), 202611051000)]
     [InlineData(typeof(M009_SolicitudesAdminHU18), 202611051100)]
     [InlineData(typeof(M010_FotosSalonHU07), 202611121000)]
+    [InlineData(typeof(M011_FotosPreviewBuscar), 202611131000)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -423,6 +424,35 @@ public class MigracionesPruebas
 
         // Afirmar
         Assert.Equal(["DROP PROCEDURE IF EXISTS dbo.sp_FotoSalon_Eliminar;", "DROP PROCEDURE IF EXISTS dbo.sp_FotoSalon_Agregar;"], sentencias);
+    }
+
+    [Fact]
+    public void M011_Up_EjecutaElScript13ConElTercerResultSetDeLaBusqueda()
+    {
+        // Actuar
+        var sentencias = ExpresionesUp(new M011_FotosPreviewBuscar()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+        var buscar = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Salon_Buscar"));
+
+        // Afirmar: mismo contenido que el script; idempotente; sin tocar tablas; página en #Pagina y hasta 5 fotos por salón.
+        Assert.Equal(ScriptsSql.Lotes(M011_FotosPreviewBuscar.ScriptPreview), sentencias);
+        Assert.DoesNotContain(sentencias, s => s.Contains("CREATE TABLE") || s.Contains("ALTER TABLE"));
+        Assert.Contains("INTO #Pagina", buscar);
+        Assert.Contains("ROW_NUMBER() OVER (PARTITION BY f.SalonId ORDER BY f.Id)", buscar);
+        Assert.Contains("x.Orden <= 5", buscar);
+        Assert.Contains("AS FotoPrincipal", buscar);
+    }
+
+    [Fact]
+    public void M011_Down_RestauraLaBusquedaDel02SinFotosPreview()
+    {
+        // Actuar
+        var sentencia = Assert.Single(ExpresionesDown(new M011_FotosPreviewBuscar()).Cast<ExecuteSqlStatementExpression>()).SqlStatement;
+
+        // Afirmar: es exactamente el lote de sp_Salon_Buscar de 02_StoredProcedures.sql (2 result sets)
+        Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M011_FotosPreviewBuscar.ScriptBase, "sp_Salon_Buscar"), sentencia);
+        Assert.Contains("CREATE OR ALTER PROCEDURE sp_Salon_Buscar", sentencia);
+        Assert.DoesNotContain("#Pagina", sentencia);
+        Assert.DoesNotContain("ROW_NUMBER", sentencia);
     }
 
     [Fact]

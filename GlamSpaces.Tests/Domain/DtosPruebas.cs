@@ -160,8 +160,9 @@ public class DtosPruebas
         var json = System.Text.Json.JsonSerializer.Serialize(salon, OpcionesWeb);
 
         // Afirmar
+        // fotosPreview (HU-07 fotos) es un campo nuevo al final; lo demás no cambia. Vacío si no se llena.
         Assert.Equal(
-            "{\"id\":1,\"nombre\":\"Jardín\",\"zona\":\"Tula\",\"capacidad\":150,\"precioDesde\":8500,\"fotoPrincipal\":\"https://x/f.jpg\"}",
+            "{\"id\":1,\"nombre\":\"Jardín\",\"zona\":\"Tula\",\"capacidad\":150,\"precioDesde\":8500,\"fotoPrincipal\":\"https://x/f.jpg\",\"fotosPreview\":[]}",
             json.Replace("\\u00ED", "í"));
     }
 
