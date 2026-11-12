@@ -21,6 +21,21 @@ builder.Services.AddScoped<IUsuarioRepositorio, UsuarioRepositorio>();
 builder.Services.AddScoped<ISalonRepositorio, SalonRepositorio>();
 builder.Services.AddScoped<IPaqueteRepositorio, PaqueteRepositorio>();
 builder.Services.AddScoped<ISolicitudRepositorio, SolicitudRepositorio>();
+builder.Services.AddScoped<IFotoSalonRepositorio, FotoSalonRepositorio>();
+
+// HU-07 (fotos): archivos en Azure Blob Storage. Variables de entorno Almacenamiento__CadenaConexion
+// y Almacenamiento__Contenedor (en local: dotnet user-secrets). Si faltan, la API no arranca y lo dice
+// claramente, sin mostrar nunca el valor de la cadena.
+builder.Services.AddOptions<OpcionesAlmacenamiento>()
+    .Bind(builder.Configuration.GetSection(OpcionesAlmacenamiento.Seccion))
+    .Validate(o => !string.IsNullOrWhiteSpace(o.CadenaConexion),
+        "Falta la variable de entorno Almacenamiento__CadenaConexion (almacenamiento de fotos de los salones).")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Contenedor),
+        "Falta la variable de entorno Almacenamiento__Contenedor (contenedor de fotos, ej. fotos-salones).")
+    .ValidateOnStart();
+builder.Services.AddSingleton<IAlmacenamientoFotos>(sp =>
+    new AlmacenamientoFotosAzure(sp.GetRequiredService<IOptions<OpcionesAlmacenamiento>>().Value));
+builder.Services.AddScoped<FotosSalonServicio>();
 
 // Healthcheck para monitoreo: /health responde Healthy si la BD contesta.
 builder.Services.AddHealthChecks().AddCheck("azure-sql", () =>

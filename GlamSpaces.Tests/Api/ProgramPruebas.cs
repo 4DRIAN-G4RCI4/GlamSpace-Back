@@ -128,5 +128,7 @@ public class ProgramPruebas : IClassFixture<FabricaApi>
         Assert.Contains("/api/solicitudes/crear", documento);
         Assert.Contains("/api/solicitudes/obtener", documento);
         Assert.Contains("/api/solicitudes/listar", documento);
+        Assert.Contains("/api/salones/subirFoto", documento);
+        Assert.Contains("/api/salones/eliminarFoto", documento);
     }
 }

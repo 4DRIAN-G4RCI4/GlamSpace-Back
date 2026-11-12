@@ -1,0 +1,31 @@
+HU-07 (fotos) · casos contra la API local (LocalDB GlamSpacesMigraciones con M010) y el contenedor real fotos-salones.
+Solo imágenes de prueba (JPG, PNG, WEBP de 320x200); todas se borraron al final (contenedor en 0).
+
+== Válidas (salón 7, admin 7 dueño)
+  jpg: HTTP 200 · codigo 0 · Foto subida correctamente.
+  png: HTTP 200 · codigo 0 · Foto subida correctamente.
+  webp: HTTP 200 · codigo 0 · Foto subida correctamente.
+  GET 7/8b8b6fc1c3f94ec5813c4bed0346e603.jpg: HTTP/1.1 200 OK Cache-Control: public, max-age=31536000, immutable Content-Type: image/jpeg 
+  GET 7/74991954cde440288ea5859eff12ca74.png: HTTP/1.1 200 OK Cache-Control: public, max-age=31536000, immutable Content-Type: image/png 
+  GET 7/ccf4483f72dc4ac6b6d0873d196f4b38.webp: HTTP/1.1 200 OK Cache-Control: public, max-age=31536000, immutable Content-Type: image/webp 
+  Blobs en el contenedor: 3 (esperado 3)
+== Inválidas
+  archivo falso con extensión .jpg: HTTP 415 · codigo 2006 · Solo se aceptan imágenes JPG, PNG o WEBP.
+  más de 5 MB: HTTP 413 · codigo 2007 · La imagen pesa más de 5 MB.
+  sin archivo: HTTP 400 · codigo 2005 · Selecciona una imagen para subir.
+  salón inexistente (999999): HTTP 404 · codigo 2001 · El salón no existe.
+  admin no dueño (43): HTTP 403 · codigo 2002 · Solo el administrador dueño del salón puede modificarlo.
+  Blobs en el contenedor: 3 (esperado 3: los rechazados por la BD se borraron)
+== Foto número 9
+  fotos del salón 7 antes: 8
+  novena: HTTP 409 · codigo 2008 · El salón ya tiene 8 fotos. Elimina una para subir otra.
+  Blobs en el contenedor: 3 (esperado 3)
+== Eliminar
+  foto de otro salón (salón 2, foto 13501): HTTP 404 · codigo 2009 · La foto no existe o no es de este salón.
+  admin no dueño: HTTP 403 · codigo 2002 · Solo el administrador dueño del salón puede modificarlo.
+  foto 13501: HTTP 200 · codigo 0 · Foto eliminada correctamente. · GET del blob: 404
+  foto 13502: HTTP 200 · codigo 0 · Foto eliminada correctamente. · GET del blob: 404
+  foto 13503: HTTP 200 · codigo 0 · Foto eliminada correctamente. · GET del blob: 404
+  otra vez la misma: HTTP 404 · codigo 2009 · La foto no existe o no es de este salón.
+  Blobs en el contenedor: 0 (esperado 0)
+  Fotos del salón 7 en la BD: 0 (esperado 0)

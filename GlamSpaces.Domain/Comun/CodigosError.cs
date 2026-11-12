@@ -18,6 +18,12 @@ public static class CodigosError
     public const int NoEsDueno = 2002;
     public const int SalonSinPaquetes = 2003;
     public const int EstadoInvalido = 2004;
+    // HU-07 (fotos): subida real de imágenes. Salón inexistente = 2001 y no es dueño = 2002.
+    public const int ArchivoRequerido = 2005;
+    public const int FormatoFotoInvalido = 2006;
+    public const int FotoMuyPesada = 2007;
+    public const int LimiteDeFotos = 2008;
+    public const int FotoNoEncontrada = 2009;
 
     // 3xxx: paquetes
     public const int PaqueteNoEncontrado = 3001;

@@ -40,6 +40,9 @@ Plataforma para encontrar y reservar salones de eventos.
    ```bash
    cd GlamSpaces.Api
    dotnet user-secrets set "ConnectionStrings:GlamSpacesDb" "Server=tcp:...;Password=...;"
+   # Fotos de los salones (HU-07). Sin estas dos, la API no arranca y dice cuál falta.
+   dotnet user-secrets set "Almacenamiento:CadenaConexion" "<cadena de la cuenta de almacenamiento>"
+   dotnet user-secrets set "Almacenamiento:Contenedor" "fotos-salones"
    ```
    En Azure va en App Service → Configuración → Cadenas de conexión → `GlamSpacesDb`.
 3. Abrir `GlamSpaces.sln` en Visual Studio, o correr `dotnet run --project GlamSpaces.Api`, y abrir `/swagger`.
@@ -51,6 +54,11 @@ Tu IP debe estar permitida en el firewall de Azure SQL (Portal → servidor SQL 
 El esquema se versiona con **FluentMigrator** (proyecto `GlamSpaces.Migrations`, migraciones en
 `GlamSpaces.Migrations/Migraciones/`). Por seguridad, `scripts/migraciones.ps1` solo trabaja con
 LocalDB (BD `GlamSpacesMigraciones`) o con la BD de pruebas de `GLAMSPACES_CONN`, y se niega a correr contra Azure.
+
+> **Producción (`glamspaces-db`) se actualiza con los scripts de `Database/*.sql`, no con FluentMigrator.**
+> Las migraciones solo corren en LocalDB y en el SQL Server desechable del workflow `Migraciones BD`.
+> Por eso la BD de producción **no tiene `VersionInfo`**: un cambio de esquema se publica corriendo su
+> script (todos son idempotentes) y queda registrado en la sección "Para desplegar" de su HU.
 
 ```powershell
 dotnet tool restore                      # una vez: instala dotnet-fm desde .config/dotnet-tools.json
@@ -881,3 +889,113 @@ Pruebas unitarias: controller (los 4 criterios y el `4006`) y repositorio con `A
 Correr `Database/11_SolicitudesAdminHU18.sql` en `glamspaces-db` (idempotente) o aplicar la migración `M009`.
 Requiere que ya esté la HU-17 (`09_EstadoSolicitudesHU17.sql`).
 
+## Sprint 7 — HU-07 (fotos): subida real de imágenes
+
+Las fotos de los salones ya no son URLs que manda el cliente. El archivo se sube a **Azure Blob Storage** (una cuenta propia solo para fotos, contenedor `fotos-salones`), y `FotosSalon` guarda su URL pública.
+
+- Crear y actualizar un salón **no reciben fotos** (nunca las recibieron).
+- Las fotos se manejan solo con `subirFoto` y `eliminarFoto`.
+- Obtener, listar y buscar regresan las URLs igual que antes.
+
+### Variables de entorno
+
+| Variable | Valor | Dónde |
+|---|---|---|
+| `Almacenamiento__CadenaConexion` | Cadena de conexión de la cuenta de almacenamiento de fotos | App Service → Configuración → Variables de entorno. En local, `dotnet user-secrets` (ver "Cómo correrla"). **Nunca** en el repo. |
+| `Almacenamiento__Contenedor` | `fotos-salones` | Igual |
+
+`OpcionesAlmacenamiento` en `Program.cs` las valida al arrancar. Si falta alguna, la API no arranca y el error dice **cuál** falta, sin mostrar nunca el valor.
+
+**Contenedor público, solo lectura por blob** (`publicAccess: blob`):
+
+- Cualquiera puede ver una foto con su URL exacta; así la muestra el front.
+- Nadie puede listar el contenedor.
+- Nadie puede subir ni borrar sin la cadena de conexión.
+
+**Rotar la clave** (si se filtró, o por rutina):
+
+1. En el portal, en la cuenta de almacenamiento de fotos → *Claves de acceso*, regenerar la **clave que no está en uso**. También se puede con `az storage account keys renew -g rg-glamspaces -n <cuenta> --key key2`.
+2. Copiar la cadena de conexión de esa clave al App Service (`Almacenamiento__CadenaConexion`). El App Service se reinicia solo.
+3. Regenerar la otra clave para invalidar la anterior.
+
+Las URLs públicas de las fotos no cambian al rotar la clave.
+
+### `POST /api/salones/subirFoto` (multipart/form-data)
+
+| Campo | Tipo | Obligatorio | Notas |
+|---|---|---|---|
+| `salonId` | número | sí | Salón al que se agrega la foto |
+| `adminId` | número | sí | Administrador dueño (TODO: tomarlo del JWT cuando exista) |
+| `archivo` | archivo | sí | JPG, PNG o WEBP, máximo 5 MB |
+
+```bash
+curl -F salonId=12 -F adminId=3 -F archivo=@salon.jpg https://<api>/api/salones/subirFoto
+```
+
+```json
+{ "codigo": 0, "mensaje": "Foto subida correctamente.", "datos": { "fotoId": 40, "url": "https://<cuenta>.blob.core.windows.net/fotos-salones/12/3f2a….jpg" }, "exito": true }
+```
+
+- El tipo se revisa por el **contenido real** (magic bytes), no por la extensión ni por el Content-Type que manda el cliente.
+- El blob se guarda como `{salonId}/{GUID}.{jpg|png|webp}`, con el `Content-Type` real y `Cache-Control: public, max-age=31536000, immutable`.
+- Si la BD rechaza la foto (salón inexistente, no es el dueño, ya tiene 8) o no responde, **se borra el archivo recién subido**, así que no quedan archivos huérfanos.
+
+### Detalle del salón: `fotosDetalle`
+
+`POST /api/salones/obtener` agrega el campo **`fotosDetalle`**, con cada foto y su id para poder borrarla con
+`eliminarFoto`. El cambio es aditivo: `fotos` (lista de URLs) y el resto de la respuesta siguen igual, en el
+mismo orden. El SP `sp_Salon_Obtener` ya regresaba el id de cada foto, así que no cambia la BD.
+
+```json
+"fotos": ["https://…/12/a.jpg", "https://…/rota.jpg"],
+"fotosDetalle": [{ "fotoId": 40, "url": "https://…/12/a.jpg" }, { "fotoId": 7, "url": "https://…/rota.jpg" }]
+```
+
+Así el administrador también puede borrar las fotos viejas con URLs externas rotas (para esas, `eliminarFoto`
+borra el registro y no intenta borrar ningún archivo).
+
+### `POST /api/salones/eliminarFoto` (JSON)
+
+```json
+{ "salonId": 12, "fotoId": 40, "adminId": 3 }
+```
+
+```json
+{ "codigo": 0, "mensaje": "Foto eliminada correctamente.", "datos": { "fotoId": 40, "url": "https://…/12/3f2a….jpg" }, "exito": true }
+```
+
+Orden: valida (salón, dueño y que la foto sea de ese salón), borra el archivo y luego borra el registro.
+
+- Si el archivo ya no existe, o es una foto vieja con URL externa, no es error.
+- Si el almacenamiento falla, el registro se queda y se puede reintentar.
+
+### Códigos
+
+| Código | HTTP | Cuándo |
+|---|---|---|
+| 2001 | 404 | El salón no existe (código existente, se reusa) |
+| 2002 | 403 | El administrador no es el dueño del salón (código existente, se reusa) |
+| **2005** | 400 | No se mandó archivo o llegó vacío |
+| **2006** | 415 | No es JPG, PNG ni WEBP (por su contenido) |
+| **2007** | 413 | Pesa más de 5 MB |
+| **2008** | 409 | El salón ya tiene 8 fotos |
+| **2009** | 404 | La foto no existe o no es de ese salón |
+| 5000 | 500 | Falló el almacenamiento (mensaje genérico, sin detalles internos) |
+
+### Límites
+
+- **Tamaño y cantidad:** 5 MB por foto y 8 fotos por salón. El SP bloquea el salón mientras cuenta, así que dos subidas al mismo tiempo no pasan de 8.
+- **Peticiones grandes:** las de más de 10 MB las corta ASP.NET antes de llegar al endpoint, y la API responde 5000.
+- **Eliminar salón:** la API no tiene ese endpoint. `FotosSalonServicio.EliminarFotosDeSalon` (borra la carpeta `{salonId}/`) queda listo y probado **para cuando exista el endpoint**. Hoy no está conectado.
+- **Fotos viejas:** las que tienen URLs externas rotas no se migran; hay que volver a subirlas desde el panel.
+
+### Base de datos
+
+`Database/12_FotosSalonHU07.sql` y la migración `M010_FotosSalonHU07` son idempotentes (`CREATE OR ALTER`). Crean `sp_FotoSalon_Agregar` y `sp_FotoSalon_Eliminar` (este último con `@SoloValidar`). La tabla `FotosSalon` no cambia.
+
+### Para desplegar
+
+1. Configurar las variables `Almacenamiento__*` en el App Service (ya están).
+2. Correr `Database/12_FotosSalonHU07.sql` en `glamspaces-db` (producción se actualiza con scripts; la `M010` no se
+   registra ahí, ver "Versionamiento de la BD"). `fotosDetalle` no necesita nada en la BD.
+3. Evidencias: `docs/evidencias/32_hu07_fotos_pruebas.txt`, `33_hu07_fotos_api_local.txt` y `34_hu07_fotos_detalle_local.txt`.

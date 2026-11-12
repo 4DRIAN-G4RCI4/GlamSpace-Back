@@ -1,0 +1,8 @@
+HU-07 (fotos) · fotosDetalle en POST /api/salones/obtener contra la API local (LocalDB GlamSpacesMigraciones).
+Salón 4508 con 3 fotos (URLs externas de la carga de prueba).
+
+codigo 0 · salón 4508 · Casa de eventos Los Olivos
+fotos (igual que antes): ["https://thumb.wikimedia.org/wikipedia/commons/thumb/d/db/HRS…","https://thumb.wikimedia.org/wikipedia/commons/thumb/d/db/Com…","https://thumb.wikimedia.org/wikipedia/commons/thumb/1/1c/Nag…"]
+fotosDetalle (nuevo): [{"fotoId":9001,"url":"https://thumb.wikimedia.org/wikipedia/commons/thumb/d/db/HRS…"},{"fotoId":9002,"url":"https://thumb.wikimedia.org/wikipedia/commons/thumb/d/db/Com…"},{"fotoId":9003,"url":"https://thumb.wikimedia.org/wikipedia/commons/thumb/1/1c/Nag…"}]
+mismas URLs y orden: true
+campos: id, adminId, nombre, zona, capacidad, descripcion, estado, fechaCreacion, paquetes, fotos, fotosDetalle
