@@ -1,0 +1,73 @@
+HU-07 (fotos) · dotnet test GlamSpaces.sln (xUnit, sin base de datos y sin Azure: repositorio con ConexionFalsa,
+almacenamiento con AlmacenamientoFalso y dobles del SDK de Azure).
+
+Pruebas nuevas o tocadas por HU-07 (fotos):
+  Correctas GlamSpaces.Tests.Api.ApiControllerBasePruebas.Responder_TraduceCadaCodigoAlStatusHttpCorrecto(codigo: 2005, statusEsperado: 400)
+  Correctas GlamSpaces.Tests.Api.ApiControllerBasePruebas.Responder_TraduceCadaCodigoAlStatusHttpCorrecto(codigo: 2006, statusEsperado: 415)
+  Correctas GlamSpaces.Tests.Api.ApiControllerBasePruebas.Responder_TraduceCadaCodigoAlStatusHttpCorrecto(codigo: 2007, statusEsperado: 413)
+  Correctas GlamSpaces.Tests.Api.ApiControllerBasePruebas.Responder_TraduceCadaCodigoAlStatusHttpCorrecto(codigo: 2008, statusEsperado: 409)
+  Correctas GlamSpaces.Tests.Api.ApiControllerBasePruebas.Responder_TraduceCadaCodigoAlStatusHttpCorrecto(codigo: 2009, statusEsperado: 404)
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.EliminarFoto_FotoDeOtroSalon_Regresa404Con2009
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.EliminarFoto_Regresa200YBorraArchivoYRegistro
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.SinVariablesDeAlmacenamiento_LaApiNoArrancaYDiceCualFalta(clave: "Almacenamiento:CadenaConexion", variable: "Almacenamiento__CadenaConexion")
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.SinVariablesDeAlmacenamiento_LaApiNoArrancaYDiceCualFalta(clave: "Almacenamiento:Contenedor", variable: "Almacenamiento__Contenedor")
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.SubirFoto_ArchivoFalsoConExtensionJpg_Regresa415Con2006
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.SubirFoto_JpgValido_Regresa200ConFotoIdYUrl
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.SubirFoto_MasDe5Mb_Regresa413Con2007
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.SubirFoto_NovenaFoto_Regresa409Con2008YBorraElArchivo
+  Correctas GlamSpaces.Tests.Api.FotosEndpointsPruebas.SubirFoto_SinArchivo_Regresa400Con2005
+  Correctas GlamSpaces.Tests.Api.ProgramPruebas.Swagger_PublicaLaDocumentacionDeLosEndpoints
+  Correctas GlamSpaces.Tests.Domain.DtosPruebas.SalonNuevo_NaceNoPublicadoYSinPaquetesNiFotos
+  Correctas GlamSpaces.Tests.Domain.DtosPruebas.SalonResponse_Desde_IncluyePaquetesYSoloLasUrlDeLasFotos
+  Correctas GlamSpaces.Tests.Domain.FormatoImagenPruebas.Detectar_ArchivosVaciosOMuyCortosNoSonImagen
+  Correctas GlamSpaces.Tests.Domain.FormatoImagenPruebas.Detectar_RechazaLoQueNoEsJpgPngNiWebp(contenido: "%PDF-1.7....")
+  Correctas GlamSpaces.Tests.Domain.FormatoImagenPruebas.Detectar_RechazaLoQueNoEsJpgPngNiWebp(contenido: "GIF89a......")
+  Correctas GlamSpaces.Tests.Domain.FormatoImagenPruebas.Detectar_RechazaLoQueNoEsJpgPngNiWebp(contenido: "RIFF....WAVE")
+  Correctas GlamSpaces.Tests.Domain.FormatoImagenPruebas.Detectar_RechazaLoQueNoEsJpgPngNiWebp(contenido: "texto que se hace pasar por foto.jpg")
+  Correctas GlamSpaces.Tests.Domain.FormatoImagenPruebas.Detectar_ReconoceJpgPngYWebpConSuExtensionYContentType
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.EliminarFotosDeSalon_BorraSoloLaCarpetaDeEseSalon
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Eliminar_SiFallaElAlmacenamiento_Regresa5000YConservaElRegistro
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Eliminar_SiNoPasaLaValidacion_NoBorraNada(codigo: 2001)
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Eliminar_SiNoPasaLaValidacion_NoBorraNada(codigo: 2002)
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Eliminar_SiNoPasaLaValidacion_NoBorraNada(codigo: 2009)
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Eliminar_ValidaBorraElArchivoYLuegoElRegistro
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_ArchivoFalsoConExtensionJpg_Regresa2006SinSubirNada
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_Exactamente5Mb_SeAcepta
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_JpgValido_LoGuardaEnLaCarpetaDelSalonConGuidYRegistraLaUrl
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_MasDe5Mb_Regresa2007SinSubirNada
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_PngYWebp_UsanSuExtensionYContentTypeReales(extension: "png", contentType: "image/png")
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_PngYWebp_UsanSuExtensionYContentTypeReales(extension: "webp", contentType: "image/webp")
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_SiElSpRechazaYTampocoSePuedeBorrar_RegresaElErrorDelSp
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_SiElSpRechaza_BorraElArchivoSubidoYRegresaElCodigo(codigo: 2001)
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_SiElSpRechaza_BorraElArchivoSubidoYRegresaElCodigo(codigo: 2002)
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_SiElSpRechaza_BorraElArchivoSubidoYRegresaElCodigo(codigo: 2008)
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_SiFallaElAlmacenamiento_Regresa5000GenericoSinRegistrar
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_SiLaBdNoResponde_BorraElArchivoYDejaPasarElError
+  Correctas GlamSpaces.Tests.Domain.FotosSalonServicioPruebas.Subir_SinArchivoOVacio_Regresa2005SinSubirNada
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.ConstructorPublico_UsaLaCadenaYElContenedorDeLasOpciones
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.EliminarCarpetaDeSalon_BorraCadaBlobConElPrefijoDelSalon
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.EliminarCarpetaDeSalon_SiAzureFalla_LanzaErrorAlmacenamiento
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.Eliminar_UrlDeNuestroContenedor_BorraElBlobSiExiste
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.Eliminar_UrlExterna_NoHaceNada
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.RutaEnElContenedor_SoloReconoceUrlsDeNuestroContenedor(url: "", esperada: null)
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.RutaEnElContenedor_SoloReconoceUrlsDeNuestroContenedor(url: "https://CUENTA.blob.core.windows.net/fotos-salones"···, esperada: "12/a.jpg")
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.RutaEnElContenedor_SoloReconoceUrlsDeNuestroContenedor(url: "https://cuenta.blob.core.windows.net/fotos-salones"···, esperada: "12/a.jpg")
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.RutaEnElContenedor_SoloReconoceUrlsDeNuestroContenedor(url: "https://cuenta.blob.core.windows.net/fotos-salones"···, esperada: "12/con espacio.png")
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.RutaEnElContenedor_SoloReconoceUrlsDeNuestroContenedor(url: "https://cuenta.blob.core.windows.net/fotos-salones"···, esperada: null)
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.RutaEnElContenedor_SoloReconoceUrlsDeNuestroContenedor(url: "https://cuenta.blob.core.windows.net/otro-contened"···, esperada: null)
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.Subir_GuardaConContentTypeYCacheControlYRegresaLaUrlDelBlob
+  Correctas GlamSpaces.Tests.Infrastructure.AlmacenamientoFotosAzurePruebas.Subir_SiAzureFalla_LanzaErrorAlmacenamiento
+  Correctas GlamSpaces.Tests.Infrastructure.FotoSalonRepositorioPruebas.Agregar_ConErrorDelSp_RegresaElCodigoSinDatos(codigo: 2001, mensaje: "El salón no existe.")
+  Correctas GlamSpaces.Tests.Infrastructure.FotoSalonRepositorioPruebas.Agregar_ConErrorDelSp_RegresaElCodigoSinDatos(codigo: 2002, mensaje: "Solo el administrador dueño del salón puede modifi"···)
+  Correctas GlamSpaces.Tests.Infrastructure.FotoSalonRepositorioPruebas.Agregar_ConErrorDelSp_RegresaElCodigoSinDatos(codigo: 2008, mensaje: "El salón ya tiene 8 fotos. Elimina una para subir "···)
+  Correctas GlamSpaces.Tests.Infrastructure.FotoSalonRepositorioPruebas.Agregar_LlamaAlSpConSalonAdminYUrlYRegresaFotoIdYUrl
+  Correctas GlamSpaces.Tests.Infrastructure.FotoSalonRepositorioPruebas.Eliminar_FotoDeOtroSalon_Regresa2009
+  Correctas GlamSpaces.Tests.Infrastructure.FotoSalonRepositorioPruebas.ValidarYEliminar_UsanElMismoSpConSoloValidar(soloValidar: False)
+  Correctas GlamSpaces.Tests.Infrastructure.FotoSalonRepositorioPruebas.ValidarYEliminar_UsanElMismoSpConSoloValidar(soloValidar: True)
+  Correctas GlamSpaces.Tests.Migrations.MigracionesPruebas.CadaMigracion_TieneSuNumeroDeVersionYDescripcion(tipo: typeof(GlamSpaces.Migrations.Migraciones.M010_FotosSalonHU07), version: 202611121000)
+  Correctas GlamSpaces.Tests.Migrations.MigracionesPruebas.M010_Down_BorraLosDosSp
+  Correctas GlamSpaces.Tests.Migrations.MigracionesPruebas.M010_Up_EjecutaElScript12ConLosSpDeFotos
+
+Resultado total:
+  Pruebas totales: 191
+  Correcto: 191

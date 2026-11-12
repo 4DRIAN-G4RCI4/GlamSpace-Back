@@ -30,6 +30,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M007_ProcedimientosSolicitudes), 202610291200)]
     [InlineData(typeof(M008_EstadoSolicitudesHU17), 202611051000)]
     [InlineData(typeof(M009_SolicitudesAdminHU18), 202611051100)]
+    [InlineData(typeof(M010_FotosSalonHU07), 202611121000)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -392,6 +393,36 @@ public class MigracionesPruebas
         Assert.Contains("u.NombreCompleto AS NombreCliente", listar);
         Assert.Contains("p.Precio AS PrecioPaquete", listar);
         Assert.Contains("ORDER BY s.FechaEvento, s.Id", listar);
+    }
+
+    [Fact]
+    public void M010_Up_EjecutaElScript12ConLosSpDeFotos()
+    {
+        // Actuar
+        var sentencias = ExpresionesUp(new M010_FotosSalonHU07()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+        var agregar = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_FotoSalon_Agregar"));
+        var eliminar = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_FotoSalon_Eliminar"));
+
+        // Afirmar: mismo contenido que el script; idempotente; reusa 2001/2002 y usa 2008/2009.
+        Assert.Equal(ScriptsSql.Lotes(M010_FotosSalonHU07.ScriptFotos), sentencias);
+        Assert.DoesNotContain(sentencias, s => s.Contains("CREATE TABLE") || s.Contains("ALTER TABLE"));
+        Assert.Contains("WITH (UPDLOCK, HOLDLOCK)", agregar);
+        Assert.Contains("@Codigo = 2001", agregar);
+        Assert.Contains("@Codigo = 2002", agregar);
+        Assert.Contains("@Codigo = 2008", agregar);
+        Assert.Contains(">= 8", agregar);
+        Assert.Contains("@Codigo = 2009", eliminar);
+        Assert.Contains("@SoloValidar", eliminar);
+    }
+
+    [Fact]
+    public void M010_Down_BorraLosDosSp()
+    {
+        // Actuar
+        var sentencias = ExpresionesDown(new M010_FotosSalonHU07()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+
+        // Afirmar
+        Assert.Equal(["DROP PROCEDURE IF EXISTS dbo.sp_FotoSalon_Eliminar;", "DROP PROCEDURE IF EXISTS dbo.sp_FotoSalon_Agregar;"], sentencias);
     }
 
     [Fact]

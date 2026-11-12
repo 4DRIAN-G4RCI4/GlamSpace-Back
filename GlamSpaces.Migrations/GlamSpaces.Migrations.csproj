@@ -22,6 +22,8 @@
     <EmbeddedResource Include="..\Database\09_EstadoSolicitudesHU17.sql" LogicalName="Database.09_EstadoSolicitudesHU17.sql" />
     <!-- 009 (HU-18) ejecuta el 11. -->
     <EmbeddedResource Include="..\Database\11_SolicitudesAdminHU18.sql" LogicalName="Database.11_SolicitudesAdminHU18.sql" />
+    <!-- 010 (HU-07 fotos) ejecuta el 12. -->
+    <EmbeddedResource Include="..\Database\12_FotosSalonHU07.sql" LogicalName="Database.12_FotosSalonHU07.sql" />
   </ItemGroup>
 
   <!-- Permite que GlamSpaces.Tests pruebe las clases internal de este proyecto. -->
