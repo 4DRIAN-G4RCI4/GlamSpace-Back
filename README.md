@@ -998,9 +998,17 @@ Orden: valida (salón, dueño y que la foto sea de ese salón), borra el archivo
 
 `Database/12_FotosSalonHU07.sql` y la migración `M010_FotosSalonHU07` son idempotentes (`CREATE OR ALTER`). Crean `sp_FotoSalon_Agregar` y `sp_FotoSalon_Eliminar` (este último con `@SoloValidar`). La tabla `FotosSalon` no cambia.
 
+`Database/13_FotosPreviewBuscar.sql` y la migración `M011_FotosPreviewBuscar` (también idempotentes) cambian `sp_Salon_Buscar` para `fotosPreview`:
+
+- Agregan un tercer result set con hasta 5 fotos por salón de la página.
+- Guardan la página en `#Pagina`, así que sigue siendo una sola consulta por página.
+- El `Down()` de la 011 restaura la versión de `02_StoredProcedures.sql`.
+
 ### Para desplegar
 
 1. Configurar las variables `Almacenamiento__*` en el App Service (ya están).
 2. Correr `Database/12_FotosSalonHU07.sql` en `glamspaces-db` (producción se actualiza con scripts; la `M010` no se
    registra ahí, ver "Versionamiento de la BD"). `fotosDetalle` no necesita nada en la BD.
-3. Evidencias: `docs/evidencias/32_hu07_fotos_pruebas.txt`, `33_hu07_fotos_api_local.txt` y `34_hu07_fotos_detalle_local.txt`.
+3. Correr `Database/13_FotosPreviewBuscar.sql` en `glamspaces-db` para `fotosPreview`. La `M011` tampoco se registra en producción.
+   Mientras no se corra, la API responde `fotosPreview: []`, así que el orden del deploy no importa.
+4. Evidencias: `docs/evidencias/32_hu07_fotos_pruebas.txt`, `33_hu07_fotos_api_local.txt` y `34_hu07_fotos_detalle_local.txt`.
