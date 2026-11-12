@@ -55,6 +55,11 @@ El esquema se versiona con **FluentMigrator** (proyecto `GlamSpaces.Migrations`,
 `GlamSpaces.Migrations/Migraciones/`). Por seguridad, `scripts/migraciones.ps1` solo trabaja con
 LocalDB (BD `GlamSpacesMigraciones`) o con la BD de pruebas de `GLAMSPACES_CONN`, y se niega a correr contra Azure.
 
+> **Producción (`glamspaces-db`) se actualiza con los scripts de `Database/*.sql`, no con FluentMigrator.**
+> Las migraciones solo corren en LocalDB y en el SQL Server desechable del workflow `Migraciones BD`.
+> Por eso la BD de producción **no tiene `VersionInfo`**: un cambio de esquema se publica corriendo su
+> script (todos son idempotentes) y queda registrado en la sección "Para desplegar" de su HU.
+
 ```powershell
 dotnet tool restore                      # una vez: instala dotnet-fm desde .config/dotnet-tools.json
 .\scripts\migraciones.ps1 listar         # aplicadas y pendientes
@@ -935,6 +940,20 @@ curl -F salonId=12 -F adminId=3 -F archivo=@salon.jpg https://<api>/api/salones/
 - El blob se guarda como `{salonId}/{GUID}.{jpg|png|webp}`, con el `Content-Type` real y `Cache-Control: public, max-age=31536000, immutable`.
 - Si la BD rechaza la foto (salón inexistente, no es el dueño, ya tiene 8) o no responde, **se borra el archivo recién subido**, así que no quedan archivos huérfanos.
 
+### Detalle del salón: `fotosDetalle`
+
+`POST /api/salones/obtener` agrega el campo **`fotosDetalle`**, con cada foto y su id para poder borrarla con
+`eliminarFoto`. El cambio es aditivo: `fotos` (lista de URLs) y el resto de la respuesta siguen igual, en el
+mismo orden. El SP `sp_Salon_Obtener` ya regresaba el id de cada foto, así que no cambia la BD.
+
+```json
+"fotos": ["https://…/12/a.jpg", "https://…/rota.jpg"],
+"fotosDetalle": [{ "fotoId": 40, "url": "https://…/12/a.jpg" }, { "fotoId": 7, "url": "https://…/rota.jpg" }]
+```
+
+Así el administrador también puede borrar las fotos viejas con URLs externas rotas (para esas, `eliminarFoto`
+borra el registro y no intenta borrar ningún archivo).
+
 ### `POST /api/salones/eliminarFoto` (JSON)
 
 ```json
@@ -977,5 +996,6 @@ Orden: valida (salón, dueño y que la foto sea de ese salón), borra el archivo
 ### Para desplegar
 
 1. Configurar las variables `Almacenamiento__*` en el App Service (ya están).
-2. Correr `Database/12_FotosSalonHU07.sql` en `glamspaces-db`, o aplicar la migración `M010`.
-3. Evidencias: `docs/evidencias/32_hu07_fotos_pruebas.txt` y `33_hu07_fotos_api_local.txt`.
+2. Correr `Database/12_FotosSalonHU07.sql` en `glamspaces-db` (producción se actualiza con scripts; la `M010` no se
+   registra ahí, ver "Versionamiento de la BD"). `fotosDetalle` no necesita nada en la BD.
+3. Evidencias: `docs/evidencias/32_hu07_fotos_pruebas.txt`, `33_hu07_fotos_api_local.txt` y `34_hu07_fotos_detalle_local.txt`.
