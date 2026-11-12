@@ -8,6 +8,10 @@ public class ControllersPruebas
 
     private static RespuestaApi<T> Exito<T>(T datos) => RespuestaApi<T>.Ok(datos, "Operación exitosa.");
 
+    // El servicio de fotos con dobles: las pruebas de salones no tocan fotos.
+    private static SalonesController Salones(ISalonRepositorio repo) =>
+        new(repo, new FotosSalonServicio(Substitute.For<IFotoSalonRepositorio>(), Substitute.For<IAlmacenamientoFotos>()));
+
     // ---------- Usuarios ----------
 
     [Fact]
@@ -81,7 +85,7 @@ public class ControllersPruebas
         repo.Crear(Arg.Any<SalonRequest>()).Returns(Exito(new SalonResponse { Id = 1, Estado = "no_publicado" }));
 
         // Actuar
-        var resultado = Resultado(await new SalonesController(repo).Crear(new SalonRequest { AdminId = 1, Nombre = "J", Zona = "T", Capacidad = 10 }));
+        var resultado = Resultado(await Salones(repo).Crear(new SalonRequest { AdminId = 1, Nombre = "J", Zona = "T", Capacidad = 10 }));
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);
@@ -96,7 +100,7 @@ public class ControllersPruebas
         repo.Obtener(99).Returns(RespuestaApi<SalonResponse>.Error(CodigosError.SalonNoEncontrado, "El salón no existe."));
 
         // Actuar
-        var resultado = Resultado(await new SalonesController(repo).Obtener(new IdRequest { Id = 99 }));
+        var resultado = Resultado(await Salones(repo).Obtener(new IdRequest { Id = 99 }));
 
         // Afirmar
         Assert.Equal(404, resultado.StatusCode);
@@ -111,7 +115,7 @@ public class ControllersPruebas
             .Returns(RespuestaApi<SalonResponse>.Error(CodigosError.SalonSinPaquetes, "Para publicar el salón se requiere al menos un paquete."));
 
         // Actuar
-        var resultado = Resultado(await new SalonesController(repo).Actualizar(new ActualizarSalonRequest { Id = 1, Estado = "publicado" }));
+        var resultado = Resultado(await Salones(repo).Actualizar(new ActualizarSalonRequest { Id = 1, Estado = "publicado" }));
 
         // Afirmar
         Assert.Equal(400, resultado.StatusCode);
@@ -132,7 +136,7 @@ public class ControllersPruebas
         });
 
         // Actuar
-        var resultado = Resultado(await new SalonesController(repo).Listar(new ListarSalonesRequest()));
+        var resultado = Resultado(await Salones(repo).Listar(new ListarSalonesRequest()));
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);
@@ -153,7 +157,7 @@ public class ControllersPruebas
         });
 
         // Actuar
-        var resultado = Resultado(await new SalonesController(repo).Buscar(new BuscarSalonesRequest { CapacidadMinima = 100000 }));
+        var resultado = Resultado(await Salones(repo).Buscar(new BuscarSalonesRequest { CapacidadMinima = 100000 }));
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);
@@ -172,7 +176,7 @@ public class ControllersPruebas
         }));
 
         // Actuar
-        var resultado = Resultado(await new SalonesController(repo).Disponibilidad(request));
+        var resultado = Resultado(await Salones(repo).Disponibilidad(request));
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);

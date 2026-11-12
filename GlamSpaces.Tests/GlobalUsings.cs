@@ -13,6 +13,8 @@ global using GlamSpaces.Domain.Comun;
 global using GlamSpaces.Domain.Dtos;
 global using GlamSpaces.Domain.Entities;
 global using GlamSpaces.Domain.Interfaces;
+global using GlamSpaces.Domain.Servicios;
+global using GlamSpaces.Infrastructure.Almacenamiento;
 global using GlamSpaces.Infrastructure.Datos;
 global using GlamSpaces.Infrastructure.Repositorios;
 global using GlamSpaces.Infrastructure.Seguridad;

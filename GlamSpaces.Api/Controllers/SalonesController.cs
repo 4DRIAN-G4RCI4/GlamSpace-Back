@@ -1,15 +1,21 @@
 namespace GlamSpaces.Api.Controllers;
 
-// Cubre HU-06 (CRUD de salones). Las reglas de negocio viven en los stored procedures;
-// el controller solo recibe la petición y regresa la respuesta.
+// Cubre HU-06 (CRUD de salones) y HU-07 (fotos): subida real de imágenes. Las reglas de negocio
+// viven en los stored procedures; el controller solo recibe la petición y regresa la respuesta.
 [Route("api/salones")]
 public class SalonesController : ApiControllerBase
 {
-    private readonly ISalonRepositorio _salones;
+    // Deja llegar archivos de hasta 10 MB para responder 2007 ("pesa más de 5 MB") con el formato
+    // estándar; más grandes que esto, ASP.NET corta la petición antes.
+    internal const long LimitePeticionFoto = 10 * 1024 * 1024;
 
-    public SalonesController(ISalonRepositorio salones)
+    private readonly ISalonRepositorio _salones;
+    private readonly FotosSalonServicio _fotos;
+
+    public SalonesController(ISalonRepositorio salones, FotosSalonServicio fotos)
     {
         _salones = salones;
+        _fotos = fotos;
     }
 
     // POST /api/salones/crear
@@ -50,4 +56,31 @@ public class SalonesController : ApiControllerBase
     [HttpPost("disponibilidad")]
     public async Task<ActionResult<RespuestaApi<DisponibilidadResponse>>> Disponibilidad([FromBody] DisponibilidadRequest request)
         => Responder(await _salones.Disponibilidad(request));
+
+    // POST /api/salones/subirFoto  (multipart/form-data: salonId, adminId, archivo)
+    // HU-07 (fotos): JPG, PNG o WEBP (por su contenido real), máximo 5 MB y 8 fotos por salón.
+    // Regresa { fotoId, url }.
+    [HttpPost("subirFoto")]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(LimitePeticionFoto)]
+    [RequestFormLimits(MultipartBodyLengthLimit = LimitePeticionFoto)]
+    public async Task<ActionResult<RespuestaApi<FotoSalonResponse>>> SubirFoto([FromForm] SubirFotoRequest request)
+    {
+        await using var contenido = request.Archivo?.OpenReadStream();
+        return Responder(await _fotos.Subir(request.SalonId, request.AdminId, contenido, request.Archivo?.Length ?? 0));
+    }
+
+    // POST /api/salones/eliminarFoto  { salonId, fotoId, adminId }
+    // HU-07 (fotos): borra la foto (registro y archivo). Solo el dueño del salón.
+    [HttpPost("eliminarFoto")]
+    public async Task<ActionResult<RespuestaApi<FotoSalonResponse>>> EliminarFoto([FromBody] EliminarFotoRequest request)
+        => Responder(await _fotos.Eliminar(request));
+}
+
+// Campos del multipart/form-data de subirFoto.
+public class SubirFotoRequest
+{
+    public int SalonId { get; set; }
+    public int AdminId { get; set; } // TODO: tomarlo del JWT cuando exista
+    public IFormFile? Archivo { get; set; }
 }

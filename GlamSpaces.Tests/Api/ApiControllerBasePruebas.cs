@@ -28,6 +28,11 @@ public class ApiControllerBasePruebas
     [InlineData(CodigosError.SolicitudDuplicada, StatusCodes.Status409Conflict)]
     [InlineData(CodigosError.SolicitudAjena, StatusCodes.Status403Forbidden)]
     [InlineData(CodigosError.SolicitudYaAtendida, StatusCodes.Status409Conflict)]
+    [InlineData(CodigosError.ArchivoRequerido, StatusCodes.Status400BadRequest)]
+    [InlineData(CodigosError.FormatoFotoInvalido, StatusCodes.Status415UnsupportedMediaType)]
+    [InlineData(CodigosError.FotoMuyPesada, StatusCodes.Status413PayloadTooLarge)]
+    [InlineData(CodigosError.LimiteDeFotos, StatusCodes.Status409Conflict)]
+    [InlineData(CodigosError.FotoNoEncontrada, StatusCodes.Status404NotFound)]
     [InlineData(CodigosError.ErrorInterno, StatusCodes.Status500InternalServerError)]
     public void Responder_TraduceCadaCodigoAlStatusHttpCorrecto(int codigo, int statusEsperado)
     {
