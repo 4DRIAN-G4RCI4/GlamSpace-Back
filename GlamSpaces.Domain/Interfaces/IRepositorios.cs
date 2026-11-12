@@ -20,6 +20,14 @@ public interface ISalonRepositorio
     Task<RespuestaApi<DisponibilidadResponse>> Disponibilidad(DisponibilidadRequest request);
 }
 
+// HU-07 (fotos): registro de las fotos de un salón (la URL; el archivo vive en IAlmacenamientoFotos).
+public interface IFotoSalonRepositorio
+{
+    Task<RespuestaApi<FotoSalonResponse>> Agregar(int salonId, int adminId, string url);
+    Task<RespuestaApi<FotoSalonResponse>> Validar(EliminarFotoRequest request);  // valida y regresa la foto sin borrarla
+    Task<RespuestaApi<FotoSalonResponse>> Eliminar(EliminarFotoRequest request);
+}
+
 public interface IPaqueteRepositorio
 {
     Task<RespuestaApi<PaqueteResponse>> Crear(CrearPaqueteRequest request);
