@@ -135,6 +135,21 @@ public sealed class FotosEndpointsPruebas : IDisposable
         Assert.Equal(CodigosError.FotoNoEncontrada, cuerpo.Codigo);
     }
 
+    [Fact]
+    public async Task ObtenerSalon_JsonTraeFotosComoAntesYFotosDetalleConFotoIdYUrl()
+    {
+        // Arreglar
+        var salon = new Salon { Id = 12, Nombre = "Jardín", Fotos = [new FotoSalon { Id = 40, SalonId = 12, Url = UrlBlob }] };
+        _fabrica.Salones.Obtener(12).Returns(RespuestaApi<SalonResponse>.Ok(SalonResponse.Desde(salon), "Consulta exitosa."));
+
+        // Actuar
+        var json = await (await _fabrica.CreateClient().PostAsJsonAsync("/api/salones/obtener", new { id = 12 })).Content.ReadAsStringAsync();
+
+        // Afirmar: el contrato que ya usa el front no cambia y se agrega fotosDetalle
+        Assert.Contains($"\"fotos\":[\"{UrlBlob}\"]", json);
+        Assert.Contains($"\"fotosDetalle\":[{{\"fotoId\":40,\"url\":\"{UrlBlob}\"}}]", json);
+    }
+
     [Theory]
     [InlineData("Almacenamiento:CadenaConexion", "Almacenamiento__CadenaConexion")]
     [InlineData("Almacenamiento:Contenedor", "Almacenamiento__Contenedor")]

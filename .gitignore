@@ -5,3 +5,6 @@ obj/
 *.bak
 respaldos/
 TestResults/
+
+# Perfil local de Visual Studio / dotnet run: cada quien tiene el suyo, nunca se sube.
+GlamSpaces.Api/Properties/launchSettings.json

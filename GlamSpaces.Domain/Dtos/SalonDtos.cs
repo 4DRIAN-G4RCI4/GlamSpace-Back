@@ -62,7 +62,9 @@ public class SalonResponse
     public string Estado { get; set; } = string.Empty;
     public DateTime FechaCreacion { get; set; }
     public List<PaqueteResponse> Paquetes { get; set; } = new();
-    public List<string> Fotos { get; set; } = new(); // URLs
+    public List<string> Fotos { get; set; } = new(); // URLs (se conserva igual para no romper al front)
+    // HU-07 (fotos): las mismas fotos con su id, para poder borrarlas con eliminarFoto.
+    public List<FotoSalonResponse> FotosDetalle { get; set; } = new();
 
     public static SalonResponse Desde(Salon s) => new()
     {
@@ -76,6 +78,7 @@ public class SalonResponse
         FechaCreacion = s.FechaCreacion,
         Paquetes = s.Paquetes.Select(PaqueteResponse.Desde).ToList(),
         Fotos = s.Fotos.Select(f => f.Url).ToList(),
+        FotosDetalle = s.Fotos.Select(FotoSalonResponse.Desde).ToList(),
     };
 }
 
