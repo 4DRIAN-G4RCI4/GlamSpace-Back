@@ -1,0 +1,42 @@
+HU-07 (fotos) · fotosPreview en la búsqueda · pruebas en LocalDB (GlamSpacesMigraciones)
+Volumen: 1506 salones (1420 publicados), 4500 fotos.
+
+== Script 13 dos veces (idempotente)
+corrida 1 del script 13: OK
+corrida 2 del script 13: OK
+
+== Tiempos de sp_Salon_Buscar (mediana de 25 ejecuciones leyendo TODOS los result sets, como Dapper)
+Ronda 1 · ANTES (SP de 02_StoredProcedures.sql)            · DESPUÉS (13_FotosPreviewBuscar.sql)
+  sin filtros, pag 1 de 10       22.49 ms (2 result sets)  ·  35.33 ms (3 result sets: 1/10/24 filas)
+  sin filtros, pag 1 de 100      23.77 ms                  ·  40.81 ms (1/100/294)
+  zona 'Tula', pag 1 de 10       23.34 ms                  ·  30.72 ms (1/10/30)
+  sin filtros, última pag (10)   23.18 ms                  ·  40.71 ms (1/10/27)
+Ronda 2 (se restauró el SP viejo y se volvió a aplicar el 13)
+  sin filtros, pag 1 de 10       27.45 ms                  ·  30.05 ms
+  sin filtros, pag 1 de 100      24.50 ms                  ·  35.19 ms
+  zona 'Tula', pag 1 de 10       23.85 ms                  ·  28.82 ms
+  sin filtros, última pag (10)   27.59 ms                  ·  32.25 ms
+Costo: de +3 a +17 ms según la ronda (tabla #Pagina + tercer result set). Sigue siendo UNA consulta por página (sin N+1).
+
+== POST /api/salones/buscar (API local con el script 13 · salón 2 con 7 fotos temporales, borradas al final)
+codigo 0 · totalRegistros 1420 · totalPaginas 15
+PASA  · Campos de cada salón: los de siempre más fotosPreview al final — id, nombre, zona, capacidad, precioDesde, fotoPrincipal, fotosPreview
+PASA  · fotosPreview es siempre un arreglo — 1420 salones
+PASA  · Nunca más de 5 fotos por salón — máximo 5
+PASA  · Si tiene fotos, la primera de fotosPreview es fotoPrincipal
+PASA  · Sin fotos: fotoPrincipal null y fotosPreview [] — 4 salones sin fotos
+PASA  · Salón con 7 fotos: fotosPreview trae exactamente 5 — preview-1.jpg, preview-2.jpg, preview-3.jpg, preview-4.jpg, preview-5.jpg
+PASA  · Mismo orden que las 5 primeras de `fotos` del detalle
+PASA  · Salón con 3 fotos: las 3, iguales a `fotos` del detalle
+PASA  · Con filtro de zona sigue funcionando — 165 resultados
+PASA  · Sin resultados: éxito con lista vacía — No se encontraron salones con esos filtros.
+
+Resultado: 10 de 10 pasan
+
+== API nueva + SP viejo (2 result sets) en SQL Server real
+API nueva + SP viejo: HTTP 200 · codigo 0 · 10 salones · fotoPrincipal presente en 8 · fotosPreview vacía en todos: true
+
+== Migración 011 en LocalDB (scripts/migraciones.ps1)
+202611131000: M011_FotosPreviewBuscar migrated  → sp_Salon_Buscar con #Pagina
+202611131000: M011_FotosPreviewBuscar reverted  → rollback OK: sp_Salon_Buscar sin #Pagina; SP de la 010 y FotosSalon intactos
+202611131000: M011_FotosPreviewBuscar migrated  → reaplicar OK: sp_Salon_Buscar con #Pagina
