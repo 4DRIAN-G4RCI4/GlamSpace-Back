@@ -83,6 +83,40 @@ public class DtosPruebas
     }
 
     [Fact]
+    public void SalonResponse_Desde_FotosDetalleTraeIdYUrlEnElMismoOrdenQueFotos()
+    {
+        // Arreglar: una foto vieja (URL externa) y una subida a Azure
+        var salon = new Salon
+        {
+            Id = 1,
+            Fotos =
+            [
+                new FotoSalon { Id = 4, SalonId = 1, Url = "https://upload.wikimedia.org/rota.jpg" },
+                new FotoSalon { Id = 9, SalonId = 1, Url = "https://cuenta.blob.core.windows.net/fotos-salones/1/a.jpg" },
+            ],
+        };
+
+        // Actuar
+        var respuesta = SalonResponse.Desde(salon);
+
+        // Afirmar: fotos (URLs) sigue igual y fotosDetalle agrega el id de cada una
+        Assert.Equal(["https://upload.wikimedia.org/rota.jpg", "https://cuenta.blob.core.windows.net/fotos-salones/1/a.jpg"], respuesta.Fotos);
+        Assert.Equal([4, 9], respuesta.FotosDetalle.Select(f => f.FotoId));
+        Assert.Equal(respuesta.Fotos, respuesta.FotosDetalle.Select(f => f.Url));
+    }
+
+    [Fact]
+    public void SalonResponse_Desde_SinFotos_FotosYFotosDetalleVacias()
+    {
+        // Actuar
+        var respuesta = SalonResponse.Desde(new Salon { Id = 1 });
+
+        // Afirmar
+        Assert.Empty(respuesta.Fotos);
+        Assert.Empty(respuesta.FotosDetalle);
+    }
+
+    [Fact]
     public void SalonNuevo_NaceNoPublicadoYSinPaquetesNiFotos()
     {
         // Actuar
