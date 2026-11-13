@@ -160,11 +160,13 @@ Instala el scanner como herramienta global de .NET y agrega su carpeta al `PATH`
           /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
           /d:sonar.host.url="https://sonarcloud.io"
           /d:sonar.exclusions="**/bin/**,**/obj/**"
+          /d:sonar.cpd.exclusions="Database/**"
 ```
 - `/k`: clave del proyecto en SonarQube Cloud (corregida en el commit `0feb322`).
 - `/o`: organización `4drian-g4rci4`. El frontend tiene su propio proyecto dentro de la misma organización.
 - `/d:sonar.token`: se lee del **secret de GitHub**; nunca está escrito en el repositorio.
 - `/d:sonar.exclusions`: **solo `bin/` y `obj/`**, que son artefactos de compilación. No se excluye ningún archivo de código fuente, no se usa `//NOSONAR` y no se marcó nada como falso positivo.
+- `/d:sonar.cpd.exclusions`: `Database/**` solo para la **duplicación**. Los scripts SQL repiten a propósito los SP completos (`CREATE OR ALTER`) para correr cada sprint por separado en producción; siguen analizándose con todas las reglas.
 
 ```yaml
       - name: Compilar
