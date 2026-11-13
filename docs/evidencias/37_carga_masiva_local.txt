@@ -1,0 +1,37 @@
+Carga masiva de demostración (Sprint 7): scripts 15, 16 y 17
+Fecha: 13/11/2026 · Entorno: LocalDB (GlamSpacesMigraciones) + API local http://localhost:5080
+Nunca se usó producción. La LocalDB ya tenía otros datos (7 usuarios, 1,509 salones, 3,084 paquetes,
+4,500 fotos) y quedaron intactos después de cada borrado.
+
+1) 15 con @Confirmar = 0 -> solo conteo: 30 usuarios, 1500 salones, 3000 paquetes, 6750 fotos (19 distintas).
+   No insertó nada (0 usuarios @demo.glamspaces.test después).
+
+2) Ronda 1
+   15 (@Confirmar = 1) -> 30 / 1500 / 3000 / 6750 en menos de 1 s, exit 0
+   15 otra vez -> Msg 50000 "Ya existe una carga de demostración (30 usuarios ...)", exit 1, sin cambios
+   17 -> 16 de 16 revisiones OK; sp_Salon_Buscar 33 ms sin filtros y 23 ms con "tula"
+   16 (@Confirmar = 0) -> solo conteo; 16 (@Confirmar = 1) -> ANTES 30/1500/3000/6750, DESPUÉS 0/0/0/0
+   Totales de la BD: usuarios=7 salones=1509 paquetes=3084 fotos=4500 (igual que antes de cargar)
+
+3) Ronda 2 (volver a cargar)
+   15 -> 30 / 1500 / 3000 / 6750, exit 0
+   17 -> 16 de 16 revisiones OK; sp_Salon_Buscar 31 ms sin filtros y 22 ms con "tula"
+
+4) 17 (ronda 2)
+   Salones de demo 1500 · usuarios 30 · no publicados 0
+   Salones con 4 fotos 750 · con 5 fotos 750 · otra cantidad 0 · con foto repetida 0
+   Sin paquete 0 · precios fuera de 3,000 a 45,000: 0
+   Fotos distintas 19 · fotos principales distintas 19
+   Salones seguidos con la misma principal 0 · con el mismo set 0
+   Nombres repetidos dentro de una zona 0 · zonas con formato/longitud incorrecta 0 · longitud máxima 65
+   Por municipio: Tula de Allende 444 (16 colonias), Tepeji del Río de Ocampo 276 (10), Tlaxcoapan 136 (5),
+   Tezontepec de Aldama 84 (3), Atitalaquia 84 (3), Atotonilco de Tula 84 (3), Ajacuba 58 (2),
+   Tetepango 58 (2), Tlahuelilpan 56 (2), Tepetitlán 56 (2), Huichapan 54 (2), Actopan 54 (2),
+   Chapantongo 28 (1), Nopala de Villagrán 28 (1)
+   Demo con "tula" en la zona 528 (Tula de Allende + Atotonilco de Tula) · con "tepeji" 276
+
+5) API local (POST /api/salones/buscar, tamanoPagina 18; total incluye los otros datos de la LocalDB)
+   sin filtros p1 y p2 -> codigo 0, 2922 registros, 163 páginas, 18 filas; última página (163) 6 filas
+   zona "tula" -> 694 registros, 39 páginas · zona "TEPEJÍ" y "tepeji" -> 375 registros, 21 páginas (p5 con 18 filas)
+   Cada tarjeta de demo trae fotosPreview con 4 o 5 URLs y fotosPreview[0] = fotoPrincipal.
+   POST /api/usuarios/login demo01@demo.glamspaces.test -> HTTP 401, 1003 "Correo o contraseña incorrectos."
