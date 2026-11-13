@@ -84,6 +84,17 @@ dotnet test GlamSpaces.sln --collect:"XPlat Code Coverage;Format=opencover" --re
 El workflow de Sonar corre las mismas pruebas y sube la cobertura. Detalle: sección
 "Pruebas unitarias y cobertura" de [docs/CALIDAD_SONAR.md](docs/CALIDAD_SONAR.md).
 
+**Cobertura en SonarQube Cloud.** El análisis corre en cada push a `main` (rama principal del
+proyecto en Sonar) y en cada PR, y siempre sube el reporte OpenCover de `TestResults/`.
+Los repositorios se prueban con `ConexionFalsa` (Dapper real, sin BD), así que no hace falta
+excluir lógica de negocio, repositorios ni controladores.
+
+**Exclusiones de cobertura: ninguna.** Solo se excluyen `bin/` y `obj/` del análisis. Se evaluó
+excluir `Program.cs` (arranque), pero `FabricaApi` lo levanta en memoria y ya queda cubierto en
+más del 90 %; lo único sin cubrir es abrir la `SqlConnection` real y el *health check* exitoso
+de la BD, que necesitan SQL Server y no se prueban con pruebas unitarias. No hay código generado en el proyecto (las
+migraciones de FluentMigrator se escriben a mano y tienen sus propias pruebas).
+
 ---
 
 ## Sprint 1 — Registro e inicio de sesión
