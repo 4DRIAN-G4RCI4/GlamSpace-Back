@@ -7,12 +7,10 @@ name: SonarQube Cloud
 
 on:
   push:
+    # Solo main: es la rama principal del proyecto en SonarQube Cloud (análisis completo con
+    # cobertura). El plan Free no guarda otras ramas; develop y release se revisan en sus PR.
     branches:
-      - develop
       - main
-      # Rama del Sprint 4: es la rama principal del proyecto en SonarQube Cloud,
-      # así cada push genera un análisis completo de todo el código (no solo el del PR).
-      - Sprint4_Adrian
   pull_request:
     types: [opened, synchronize, reopened]
 

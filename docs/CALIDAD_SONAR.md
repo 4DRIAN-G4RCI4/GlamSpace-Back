@@ -97,13 +97,11 @@ Nombre que aparece en la pestaña *Actions* de GitHub.
 on:
   push:
     branches:
-      - develop
       - main
-      - Sprint4_Adrian
   pull_request:
     types: [opened, synchronize, reopened]
 ```
-**Disparadores.** Se analiza en cada push a `develop`, `main` y `Sprint4_Adrian`, y en cada Pull Request cuando se abre, se actualiza o se reabre. `Sprint4_Adrian` se agregó en el commit `b118468` porque es la rama principal del proyecto en SonarQube Cloud: cada push ahí genera un análisis completo de todo el código, no solo el del PR (ver sección 5).
+**Disparadores.** Se analiza en cada push a `main` y en cada Pull Request cuando se abre, se actualiza o se reabre. En el Sprint 4 la rama principal en SonarQube Cloud fue `Sprint4_Adrian` (commit `b118468`); en el Sprint 7 se devolvió a `main` y se quitaron `develop` y `Sprint4_Adrian` de los disparadores, así cada push a `main` genera el análisis completo con cobertura (ver sección 5).
 
 ```yaml
 permissions:
@@ -196,7 +194,7 @@ Cierra el análisis, sube los resultados a sonarcloud.io y evalúa el Quality Ga
 
 **Requisitos del entorno de análisis:** .NET SDK 9, **Java 21 o mayor**, y `dotnet-sonarscanner`.
 
-**Ejecución automática.** Cada push a `develop`, `main` o `Sprint4_Adrian` y cada PR dispara el workflow. El resultado aparece en sonarcloud.io y como *check* en el PR.
+**Ejecución automática.** Cada push a `main` y cada PR dispara el workflow. El resultado aparece en sonarcloud.io y como *check* en el PR.
 
 **Ejecución local**, con el token en una variable de entorno (nunca escrito en un archivo del repo):
 
@@ -227,7 +225,7 @@ dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
 | Obstáculo | Qué pasaba | Solución |
 |---|---|---|
 | **Plan Free y repositorio privado** | En el plan Free, SonarQube Cloud solo analiza la rama principal del proyecto y los PR hacia ella. Con el repositorio privado no se podía analizar la rama de trabajo del sprint. | Se hizo **público** el repositorio, lo que además levanta el límite de líneas del plan Free. |
-| **La rama de trabajo no se analizaba completa** | En un PR, Sonar solo analiza el código nuevo del PR, no todo el proyecto. La rama de trabajo era `Sprint4_Adrian`, no `main`. | Se cambió la **rama principal del proyecto en SonarQube Cloud a `Sprint4_Adrian`** y se agregó esa rama al disparador de push del workflow (commit `b118468`). Así cada push a la rama del sprint genera un análisis completo. **Pendiente:** al cerrar la actividad hay que devolver la rama principal a `main` y quitar `Sprint4_Adrian` de los triggers (ver sección 12). |
+| **La rama de trabajo no se analizaba completa** | En un PR, Sonar solo analiza el código nuevo del PR, no todo el proyecto. La rama de trabajo era `Sprint4_Adrian`, no `main`. | Se cambió la **rama principal del proyecto en SonarQube Cloud a `Sprint4_Adrian`** y se agregó esa rama al disparador de push del workflow (commit `b118468`). Así cada push a la rama del sprint genera un análisis completo. **Resuelto en el Sprint 7:** la rama principal volvió a ser `main` y `Sprint4_Adrian` salió de los disparadores. |
 | **Java 17 ya no sirve** | SonarQube Cloud retiró el soporte de Java 17 para los scanners el 20/07/2026; el scanner fallaba al arrancar. | Se fijó **Java 21 (Temurin)** en el workflow con `actions/setup-java@v4`. |
 | **Clave de proyecto incorrecta** | El `begin` apuntaba a una clave que no coincidía con el proyecto de SonarQube Cloud y el análisis no se publicaba donde debía. | Se corrigió `/k:` a `4DRIAN-G4RCI4_GlamSpace-Back` (commit `0feb322`). |
 | **Automatic Analysis en conflicto con Actions** | SonarQube Cloud no permite que el análisis automático y el del pipeline convivan en el mismo proyecto. | Se desactivó *Automatic Analysis* en *Administration → Analysis Method* del proyecto del backend. |
