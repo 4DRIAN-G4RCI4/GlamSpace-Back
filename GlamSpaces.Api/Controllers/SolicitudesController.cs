@@ -28,7 +28,7 @@ public class SolicitudesController : ApiControllerBase
     // POST /api/solicitudes/listar
     // Listado paginado de las solicitudes del cliente. Sin solicitudes regresa lista vacía con éxito.
     [HttpPost("listar")]
-    public async Task<ActionResult<RespuestaPaginada<SolicitudResponse>>> Listar([FromBody] ListarSolicitudesRequest request)
+    public async Task<ActionResult<RespuestaPaginada<SolicitudListadoResponse>>> Listar([FromBody] ListarSolicitudesRequest request)
         => Responder(await _solicitudes.Listar(request));
 
     // POST /api/solicitudes/aceptar (HU-18)

@@ -12,6 +12,7 @@ public static class CodigosError
     public const int CredencialesIncorrectas = 1003;
     public const int NoEsAdministrador = 1004;
     public const int UsuarioNoEncontrado = 1005;
+    public const int YaEsAdministrador = 1006; // convertirAAdministrador sobre una cuenta que ya lo es
 
     // 2xxx: salones
     public const int SalonNoEncontrado = 2001;

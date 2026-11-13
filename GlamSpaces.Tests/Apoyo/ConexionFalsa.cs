@@ -14,6 +14,9 @@ public sealed class ConexionFalsa : DbConnection
     public string? ComandoEjecutado { get; private set; }
     public CommandType? TipoDeComando { get; private set; }
     public Dictionary<string, object?> Parametros { get; } = [];
+    // Todos los SP ejecutados, en orden (para repositorios que llaman a más de uno).
+    public List<string> ComandosEjecutados { get; } = [];
+    private readonly Queue<(int Codigo, string Mensaje, DataTable[] Tablas)> _siguientes = new();
 
     // Lo que "regresa el SP" en la siguiente ejecución.
     public ConexionFalsa Responder(int codigo, string mensaje, params DataTable[] tablas)
@@ -21,6 +24,13 @@ public sealed class ConexionFalsa : DbConnection
         _codigo = codigo;
         _mensaje = mensaje;
         _tablas = tablas;
+        return this;
+    }
+
+    // Lo que "regresa el SP" en la ejecución que sigue a la configurada con Responder.
+    public ConexionFalsa Despues(int codigo, string mensaje, params DataTable[] tablas)
+    {
+        _siguientes.Enqueue((codigo, mensaje, tablas));
         return this;
     }
 
@@ -48,6 +58,7 @@ public sealed class ConexionFalsa : DbConnection
     internal DbDataReader Ejecutar(ComandoFalso comando)
     {
         ComandoEjecutado = comando.CommandText;
+        ComandosEjecutados.Add(comando.CommandText);
         TipoDeComando = comando.CommandType;
         Parametros.Clear();
         foreach (DbParameter parametro in comando.Parameters)
@@ -71,6 +82,10 @@ public sealed class ConexionFalsa : DbConnection
         if (datos.Tables.Count == 0)
         {
             datos.Tables.Add(new DataTable());
+        }
+        if (_siguientes.Count > 0)
+        {
+            (_codigo, _mensaje, _tablas) = _siguientes.Dequeue();
         }
         return datos.CreateDataReader();
     }

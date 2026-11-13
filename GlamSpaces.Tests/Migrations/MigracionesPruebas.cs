@@ -33,6 +33,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M010_FotosSalonHU07), 202611121000)]
     [InlineData(typeof(M011_FotosPreviewBuscar), 202611131000)]
     [InlineData(typeof(M012_MisSalonesAdmin), 202611141000)]
+    [InlineData(typeof(M013_FotoSolicitudesYConversionAdmin), 202611151000)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -500,6 +501,30 @@ public class MigracionesPruebas
         Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Salon_Eliminar;", sentencias[0]);
         Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M012_MisSalonesAdmin.ScriptBase, "sp_Salon_Listar"), sentencias[1]);
         Assert.DoesNotContain("TotalFotos", sentencias[1]);
+    }
+
+    [Fact]
+    public void M013_Up_EjecutaElScript18Y_Down_LoRevierte()
+    {
+        // Actuar
+        var up = ExpresionesUp(new M013_FotoSolicitudesYConversionAdmin()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+        var down = ExpresionesDown(new M013_FotoSolicitudesYConversionAdmin()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+        var convertir = Assert.Single(up, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Usuario_ConvertirAAdministrador"));
+
+        // Afirmar: Up = script 18 (sin tocar tablas, una consulta por página con OUTER APPLY)
+        Assert.Equal(ScriptsSql.Lotes(M013_FotoSolicitudesYConversionAdmin.Script), up);
+        Assert.DoesNotContain(up, s => s.Contains("CREATE TABLE") || s.Contains("ALTER TABLE"));
+        Assert.Equal(2, up.Count(s => s.Contains("OUTER APPLY (SELECT TOP 1 fs.Url FROM FotosSalon fs") && s.Contains("AS FotoPrincipal")));
+        Assert.Contains("WHERE Id = @Id AND TipoCuenta = 'cliente'", convertir);
+        Assert.Contains("@Codigo = 1006", convertir);
+
+        // Down: borra los SP nuevos y restaura los listados del 08 y el 11
+        Assert.Equal(4, down.Count);
+        Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Usuario_ConvertirAAdministrador;", down[0]);
+        Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Usuario_ObtenerCredenciales;", down[1]);
+        Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M013_FotoSolicitudesYConversionAdmin.ScriptHu15, "sp_Solicitud_ListarPorCliente"), down[2]);
+        Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M013_FotoSolicitudesYConversionAdmin.ScriptHu18, "sp_Solicitud_ListarPorSalon"), down[3]);
+        Assert.All(down.Skip(2), s => Assert.DoesNotContain("FotoPrincipal", s));
     }
 
     [Fact]
