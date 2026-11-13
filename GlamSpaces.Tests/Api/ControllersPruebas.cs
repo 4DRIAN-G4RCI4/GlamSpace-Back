@@ -10,7 +10,8 @@ public class ControllersPruebas
 
     // El servicio de fotos con dobles: las pruebas de salones no tocan fotos.
     private static SalonesController Salones(ISalonRepositorio repo) =>
-        new(repo, new FotosSalonServicio(Substitute.For<IFotoSalonRepositorio>(), Substitute.For<IAlmacenamientoFotos>()));
+        new(repo, new FotosSalonServicio(Substitute.For<IFotoSalonRepositorio>(), Substitute.For<IAlmacenamientoFotos>()),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<SalonesController>.Instance);
 
     // ---------- Usuarios ----------
 

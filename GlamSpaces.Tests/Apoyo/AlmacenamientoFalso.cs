@@ -31,6 +31,7 @@ public sealed class AlmacenamientoFalso : IAlmacenamientoFotos
 
     public Task EliminarCarpetaDeSalon(int salonId)
     {
+        if (FallarAlEliminar) throw new ErrorAlmacenamiento(new InvalidOperationException("Azure no respondió"));
         CarpetasEliminadas.Add(salonId);
         foreach (var ruta in Archivos.Keys.Where(r => r.StartsWith($"{salonId}/")).ToList()) Archivos.Remove(ruta);
         return Task.CompletedTask;
