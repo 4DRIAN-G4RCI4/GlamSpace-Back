@@ -54,4 +54,24 @@ public class UsuarioRepositorio : IUsuarioRepositorio
 
         return p.Respuesta(usuario, UsuarioResponse.Desde);
     }
+
+    // Verifica la contraseña con el mismo PBKDF2 del login y después cambia el rol en el SP.
+    // El orden (existe → contraseña → ya es admin) evita revelar el rol de una cuenta ajena.
+    public async Task<RespuestaApi<UsuarioResponse>> ConvertirAAdministrador(ConvertirAdministradorRequest request)
+    {
+        var credenciales = StoredProcedure.Parametros(new { Id = request.UsuarioId });
+        var usuario = await _db.QueryFirstOrDefaultAsync<Usuario>(
+            "sp_Usuario_ObtenerCredenciales", credenciales, commandType: CommandType.StoredProcedure);
+        if (usuario == null)
+            return credenciales.Respuesta(usuario, UsuarioResponse.Desde); // 1005: el usuario no existe
+
+        if (!PasswordHasher.Verificar(request.Contrasena ?? "", usuario.PasswordHash))
+            return RespuestaApi<UsuarioResponse>.Error(CodigosError.CredencialesIncorrectas, "La contraseña es incorrecta.");
+
+        var p = StoredProcedure.Parametros(new { Id = request.UsuarioId });
+        var convertido = await _db.QueryFirstOrDefaultAsync<Usuario>(
+            "sp_Usuario_ConvertirAAdministrador", p, commandType: CommandType.StoredProcedure);
+
+        return p.Respuesta(convertido, UsuarioResponse.Desde);
+    }
 }

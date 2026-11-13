@@ -28,4 +28,12 @@ public class UsuariosController : ApiControllerBase
     [HttpPost("obtener")]
     public async Task<ActionResult<RespuestaApi<UsuarioResponse>>> Obtener([FromBody] IdRequest request)
         => Responder(await _usuarios.Obtener(request.Id));
+
+    // POST /api/usuarios/convertirAAdministrador  { usuarioId, contrasena }
+    // Convierte una cuenta de cliente en administrador (mismo correo, contraseña e historial).
+    // Pide la contraseña porque todavía no hay JWT. 1005 (404) no existe · 1003 (401) contraseña
+    // incorrecta · 1006 (409) ya es administrador. Regresa el usuario con el mismo formato del login.
+    [HttpPost("convertirAAdministrador")]
+    public async Task<ActionResult<RespuestaApi<UsuarioResponse>>> ConvertirAAdministrador([FromBody] ConvertirAdministradorRequest request)
+        => Responder(await _usuarios.ConvertirAAdministrador(request));
 }

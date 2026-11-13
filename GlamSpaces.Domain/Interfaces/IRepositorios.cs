@@ -8,6 +8,7 @@ public interface IUsuarioRepositorio
     Task<RespuestaApi<UsuarioResponse>> Registrar(RegistroRequest request);
     Task<RespuestaApi<UsuarioResponse>> Login(LoginRequest request);
     Task<RespuestaApi<UsuarioResponse>> Obtener(int id);
+    Task<RespuestaApi<UsuarioResponse>> ConvertirAAdministrador(ConvertirAdministradorRequest request);
 }
 
 public interface ISalonRepositorio
@@ -41,7 +42,7 @@ public interface ISolicitudRepositorio
 {
     Task<RespuestaApi<SolicitudResponse>> Crear(CrearSolicitudRequest request);
     Task<RespuestaApi<SolicitudResponse>> Obtener(ObtenerSolicitudRequest request);
-    Task<RespuestaPaginada<SolicitudResponse>> Listar(ListarSolicitudesRequest request);
+    Task<RespuestaPaginada<SolicitudListadoResponse>> Listar(ListarSolicitudesRequest request);
     Task<RespuestaApi<SolicitudAtendidaResponse>> Aceptar(AtenderSolicitudRequest request);
     Task<RespuestaApi<SolicitudAtendidaResponse>> Rechazar(AtenderSolicitudRequest request);
     Task<RespuestaPaginada<SolicitudAdminResponse>> ListarPorSalon(ListarSolicitudesSalonRequest request);

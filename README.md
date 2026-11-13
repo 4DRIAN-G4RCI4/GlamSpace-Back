@@ -1093,3 +1093,28 @@ En los tres, 2002 responde "Solo el administrador dueño del salón puede modifi
 - **Si la API nueva se despliega antes del script:** `listar` responde `fotoPrincipal: null` y `totalFotos: 0`, y `eliminar` responde 5000 porque el SP todavía no existe.
 
 Evidencia: `docs/evidencias/36_mis_salones_local.txt`.
+
+---
+
+## Sprint 7 — Carga masiva de demostración (1,500 salones)
+
+Scripts que se corren **a mano** (no son migraciones ni corren en los workflows). Todos tienen
+`DECLARE @Confirmar BIT = 0;` al inicio: con 0 solo muestran lo que harían; se cambia a 1 para ejecutar.
+
+| Script | Qué hace |
+|---|---|
+| `Database/15_CargaMasivaSalones.sql` | 30 admins `demoNN@demo.glamspaces.test` (sin acceso: su `PasswordHash` no tiene el formato de `PasswordHasher`), 1,500 salones `publicado` en la región Tula–Tepeji, 1 a 3 paquetes (3,000 a 45,000 MXN) y 4 o 5 fotos por salón. Determinista y en una transacción; se rechaza si ya hay una carga. |
+| `Database/16_BorrarCargaMasiva.sql` | Borra solo lo ligado a `@demo.glamspaces.test` (solicitudes, reservaciones, favoritas, fotos, paquetes, salones y usuarios), con conteos antes y después. |
+| `Database/17_VerificarCargaMasiva.sql` | Solo lectura: 16 revisiones (`OK`/`FALLA`), distribución por municipio y tiempo de `sp_Salon_Buscar`. |
+
+**Orden para producción:**
+1. Subir las copias de la carpeta local `carga-demo-subir` (fuera del repo; `demo-01.jpg` … `demo-19.jpeg`) al contenedor `fotos-salones`, carpeta `demo/`. Los nombres deben quedar exactamente iguales.
+2. `15` con `@Confirmar = 0`, revisar los conteos (30 / 1500 / 3000 / 6750) y luego con `@Confirmar = 1`.
+3. `17` y revisar que todo diga `OK`.
+4. Para quitarla: `16` con `@Confirmar = 0` y luego `1`. Los archivos de `demo/` no se borran.
+
+- **Zona:** `Colonia, Municipio, Hgo., CP 00000`, con colonias y CP reales (api.zippopotam.us/mx) y sin calles ni números. Buscar "tula" o "tepeji" encuentra los salones (la búsqueda ignora mayúsculas y acentos).
+- **Nombres:** `tipo[i % 8] + tema[(i / 8) % 40]`; la zona se elige para que un nombre no se repita dentro de la misma zona.
+- **Fotos:** la foto j del salón es `(base + j * paso) % 19`, con un paso coprimo con 19: ninguna se repite dentro de un salón, y la principal y el set cambian de un salón al siguiente.
+
+Evidencia: `docs/evidencias/37_carga_masiva_local.txt`.
