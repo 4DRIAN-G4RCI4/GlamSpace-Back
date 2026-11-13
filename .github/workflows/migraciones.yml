@@ -129,24 +129,25 @@ jobs:
       - name: Rollback de la última migración
         run: dotnet tool run dotnet-fm -- rollback -p $PROCESADOR -c "$CONN" -a $DLL by 1
 
-      # La verificación del rollback siempre revisa la ÚLTIMA migración (hoy la 012, Mis salones).
-      - name: Verificar que el rollback de la 012 quitó sp_Salon_Eliminar, restauró el listado y dejó la 011
+      # La verificación del rollback siempre revisa la ÚLTIMA migración (hoy la 013, foto en solicitudes
+      # y conversión a administrador).
+      - name: Verificar que el rollback de la 013 quitó los SP de conversión, restauró los listados y dejó la 012
         run: >
           docker exec ${{ job.services.sqlserver.id }}
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
-          -Q "IF OBJECT_ID(N'dbo.sp_Salon_Eliminar', N'P') IS NOT NULL THROW 50000, 'El rollback de la 012 no borró sp_Salon_Eliminar.', 1; IF (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Salon_Listar')) LIKE '%TotalFotos%' THROW 50000, 'El rollback de la 012 no restauró sp_Salon_Listar (sigue con TotalFotos).', 1; IF (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Salon_Buscar')) NOT LIKE '%#Pagina%' THROW 50000, 'El rollback de la 012 no debe tocar la búsqueda de la 011.', 1; IF OBJECT_ID(N'dbo.FotosSalon', N'U') IS NULL THROW 50000, 'El rollback de la 012 no debe borrar la tabla FotosSalon.', 1; IF (SELECT COUNT(*) FROM dbo.Solicitudes) <> 3 THROW 50000, 'El rollback de la 012 no debe borrar solicitudes.', 1; PRINT 'OK: sin sp_Salon_Eliminar; sp_Salon_Listar sin TotalFotos; búsqueda de la 011, FotosSalon y las 3 solicitudes siguen.';"
+          -Q "IF OBJECT_ID(N'dbo.sp_Usuario_ConvertirAAdministrador', N'P') IS NOT NULL OR OBJECT_ID(N'dbo.sp_Usuario_ObtenerCredenciales', N'P') IS NOT NULL THROW 50000, 'El rollback de la 013 no borró los SP de conversión.', 1; IF (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Solicitud_ListarPorCliente')) LIKE '%FotoPrincipal%' THROW 50000, 'El rollback de la 013 no restauró sp_Solicitud_ListarPorCliente.', 1; IF (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Solicitud_ListarPorSalon')) LIKE '%FotoPrincipal%' THROW 50000, 'El rollback de la 013 no restauró sp_Solicitud_ListarPorSalon.', 1; IF OBJECT_ID(N'dbo.sp_Salon_Eliminar', N'P') IS NULL THROW 50000, 'El rollback de la 013 no debe tocar la 012.', 1; IF (SELECT COUNT(*) FROM dbo.Solicitudes) <> 3 THROW 50000, 'El rollback de la 013 no debe borrar solicitudes.', 1; PRINT 'OK: sin SP de conversión; listados de solicitudes sin FotoPrincipal; la 012 y las 3 solicitudes siguen.';"
 
-      - name: Listar (tras el rollback, la 012 queda pendiente)
+      - name: Listar (tras el rollback, la 013 queda pendiente)
         run: dotnet tool run dotnet-fm -- list migrations -p $PROCESADOR -c "$CONN" -a $DLL
 
       - name: Reaplicar
         run: dotnet tool run dotnet-fm -- migrate -p $PROCESADOR -c "$CONN" -a $DLL up
 
-      - name: Verificar que la 012 volvió, Solicitudes completa y el historial (VersionInfo)
+      - name: Verificar que la 013 volvió, Solicitudes completa y el historial (VersionInfo)
         run: >
           docker exec ${{ job.services.sqlserver.id }}
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -d GlamSpacesMigraciones
-          -Q "IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL THROW 50000, 'La reaplicación no agregó TelefonoContacto.', 1; IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL THROW 50000, 'Falta la tabla Solicitudes.', 1; IF (SELECT COUNT(*) FROM sys.check_constraints WHERE name IN ('CK_Solicitudes_Invitados', 'CK_Solicitudes_Estado')) <> 2 THROW 50000, 'Faltan restricciones CHECK de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente' AND is_unique = 1 AND has_filter = 1) THROW 50000, 'Falta el índice único filtrado de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'Falta el índice de la 004.', 1; IF OBJECT_ID(N'dbo.sp_Solicitud_Crear', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_Solicitud_Obtener', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_Solicitud_ListarPorCliente', N'P') IS NULL THROW 50000, 'Faltan los SP de solicitudes de la 007.', 1; IF OBJECT_ID(N'dbo.sp_Solicitud_CambiarEstado', N'P') IS NULL OR NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Solicitudes_Confirmada' AND is_unique = 1 AND has_filter = 1) THROW 50000, 'Falta sp_Solicitud_CambiarEstado o UX_Solicitudes_Confirmada de la 008.', 1; IF OBJECT_ID(N'dbo.sp_Solicitud_ListarPorSalon', N'P') IS NULL THROW 50000, 'Falta sp_Solicitud_ListarPorSalon de la 009.', 1; IF OBJECT_ID(N'dbo.sp_FotoSalon_Agregar', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_FotoSalon_Eliminar', N'P') IS NULL THROW 50000, 'Faltan los SP de fotos de la 010.', 1; IF (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Salon_Buscar')) NOT LIKE '%#Pagina%' THROW 50000, 'La reaplicación de la 011 no puso la búsqueda con fotosPreview (#Pagina).', 1; IF OBJECT_ID(N'dbo.sp_Salon_Eliminar', N'P') IS NULL OR (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Salon_Listar')) NOT LIKE '%TotalFotos%' THROW 50000, 'La reaplicación de la 012 no puso sp_Salon_Eliminar ni el listado con TotalFotos.', 1; PRINT 'OK: Solicitudes completa; SP de la 007; CambiarEstado e índice de la 008; ListarPorSalon de la 009; SP de fotos de la 010; búsqueda con #Pagina de la 011; eliminar y listado con fotos de la 012.'; SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version;"
+          -Q "IF COL_LENGTH(N'dbo.Solicitudes', N'TelefonoContacto') IS NULL THROW 50000, 'La reaplicación no agregó TelefonoContacto.', 1; IF OBJECT_ID(N'dbo.Solicitudes', N'U') IS NULL THROW 50000, 'Falta la tabla Solicitudes.', 1; IF (SELECT COUNT(*) FROM sys.check_constraints WHERE name IN ('CK_Solicitudes_Invitados', 'CK_Solicitudes_Estado')) <> 2 THROW 50000, 'Faltan restricciones CHECK de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Solicitudes_Cliente_Salon_Fecha_Pendiente' AND is_unique = 1 AND has_filter = 1) THROW 50000, 'Falta el índice único filtrado de Solicitudes.', 1; IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_BusquedasFavoritas_Usuario_Salon') THROW 50000, 'Falta el índice de la 004.', 1; IF OBJECT_ID(N'dbo.sp_Solicitud_Crear', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_Solicitud_Obtener', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_Solicitud_ListarPorCliente', N'P') IS NULL THROW 50000, 'Faltan los SP de solicitudes de la 007.', 1; IF OBJECT_ID(N'dbo.sp_Solicitud_CambiarEstado', N'P') IS NULL OR NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Solicitudes_Confirmada' AND is_unique = 1 AND has_filter = 1) THROW 50000, 'Falta sp_Solicitud_CambiarEstado o UX_Solicitudes_Confirmada de la 008.', 1; IF OBJECT_ID(N'dbo.sp_Solicitud_ListarPorSalon', N'P') IS NULL THROW 50000, 'Falta sp_Solicitud_ListarPorSalon de la 009.', 1; IF OBJECT_ID(N'dbo.sp_FotoSalon_Agregar', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_FotoSalon_Eliminar', N'P') IS NULL THROW 50000, 'Faltan los SP de fotos de la 010.', 1; IF (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Salon_Buscar')) NOT LIKE '%#Pagina%' THROW 50000, 'La reaplicación de la 011 no puso la búsqueda con fotosPreview (#Pagina).', 1; IF OBJECT_ID(N'dbo.sp_Salon_Eliminar', N'P') IS NULL OR (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Salon_Listar')) NOT LIKE '%TotalFotos%' THROW 50000, 'La reaplicación de la 012 no puso sp_Salon_Eliminar ni el listado con TotalFotos.', 1; IF OBJECT_ID(N'dbo.sp_Usuario_ConvertirAAdministrador', N'P') IS NULL OR OBJECT_ID(N'dbo.sp_Usuario_ObtenerCredenciales', N'P') IS NULL OR (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Solicitud_ListarPorCliente')) NOT LIKE '%FotoPrincipal%' OR (SELECT definition FROM sys.sql_modules WHERE object_id = OBJECT_ID(N'dbo.sp_Solicitud_ListarPorSalon')) NOT LIKE '%FotoPrincipal%' THROW 50000, 'La reaplicación de la 013 no puso los SP de conversión ni FotoPrincipal en los listados de solicitudes.', 1; PRINT 'OK: Solicitudes completa; SP de la 007; CambiarEstado e índice de la 008; ListarPorSalon de la 009; SP de fotos de la 010; búsqueda con #Pagina de la 011; eliminar y listado con fotos de la 012; conversión y FotoPrincipal en solicitudes de la 013.'; SELECT Version, AppliedOn, Description FROM dbo.VersionInfo ORDER BY Version;"
 
       # HU-07 (fotos): el script 12 (el que se corre en Azure) se puede correr dos veces sin error.
       - name: HU-07 (fotos) · script 12 dos veces
@@ -171,6 +172,16 @@ jobs:
         run: |
           for vez in 1 2; do
             docker exec ${{ job.services.sqlserver.id }}               /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesMigraciones               -i /tmp/Database/14_MisSalonesAdmin.sql
+          done
+
+      # Foto en solicitudes y conversión a administrador: el script 18 (el que se corre en Azure) se
+      # puede correr dos veces sin error.
+      - name: Conversión a administrador · script 18 dos veces
+        run: |
+          for vez in 1 2; do
+            docker exec ${{ job.services.sqlserver.id }} \
+              /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -I -d GlamSpacesMigraciones \
+              -i /tmp/Database/18_FotoSolicitudesYConversionAdmin.sql
           done
 
       # HU-17: el script 09 (el que se corre en Azure) no cambia nada sobre la BD ya migrada, y

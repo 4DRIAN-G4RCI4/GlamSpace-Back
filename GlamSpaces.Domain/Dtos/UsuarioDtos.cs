@@ -17,6 +17,14 @@ public class LoginRequest
     public string Password { get; set; } = string.Empty;
 }
 
+// POST /api/usuarios/convertirAAdministrador. La contraseña confirma que la cuenta es de quien la pide.
+public class ConvertirAdministradorRequest
+{
+    // TODO: tomar usuarioId del JWT cuando exista la autenticación
+    public int UsuarioId { get; set; }
+    public string Contrasena { get; set; } = string.Empty;
+}
+
 // Lo que regresa el API: nunca incluye PasswordHash.
 public class UsuarioResponse
 {
