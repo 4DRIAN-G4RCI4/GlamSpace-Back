@@ -27,19 +27,19 @@ jobs:
     steps:
       # Historial completo (sin clon superficial) para que Sonar asigne bien el código nuevo y el blame.
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
       - name: Instalar .NET 9
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '9.x'
 
       # El scanner necesita Java. SonarQube Cloud quitó el soporte de Java 17 el 20/07/2026;
       # ahora exige Java 21 o mayor.
       - name: Instalar Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '21'
@@ -52,6 +52,8 @@ jobs:
       # begin → build → test → end: el scanner observa la compilación, las pruebas generan la
       # cobertura (OpenCover, con coverlet) y al final se sube todo.
       # Solo se excluyen bin/ y obj/ (artefactos de compilación); ningún hallazgo del código se oculta.
+      # Database/ sale solo de la detección de duplicados (cpd): cada script repite a propósito los SP
+      # completos con CREATE OR ALTER para correrse solo en producción. Su cobertura y reglas no cambian.
       # GlamSpaces.Tests se clasifica como código de prueba con <SonarQubeTestProject> en su .csproj
       # (SonarScanner for .NET no admite sonar.test.inclusions).
       - name: Iniciar análisis
@@ -62,6 +64,7 @@ jobs:
           /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
           /d:sonar.host.url="https://sonarcloud.io"
           /d:sonar.exclusions="**/bin/**,**/obj/**"
+          /d:sonar.cpd.exclusions="Database/**"
           /d:sonar.cs.opencover.reportsPaths="TestResults/**/coverage.opencover.xml"
 
       - name: Compilar
