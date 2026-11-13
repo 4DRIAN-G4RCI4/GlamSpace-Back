@@ -11,11 +11,13 @@ public class SalonesController : ApiControllerBase
 
     private readonly ISalonRepositorio _salones;
     private readonly FotosSalonServicio _fotos;
+    private readonly ILogger<SalonesController> _logger;
 
-    public SalonesController(ISalonRepositorio salones, FotosSalonServicio fotos)
+    public SalonesController(ISalonRepositorio salones, FotosSalonServicio fotos, ILogger<SalonesController> logger)
     {
         _salones = salones;
         _fotos = fotos;
+        _logger = logger;
     }
 
     // POST /api/salones/crear
@@ -75,6 +77,21 @@ public class SalonesController : ApiControllerBase
     [HttpPost("eliminarFoto")]
     public async Task<ActionResult<RespuestaApi<FotoSalonResponse>>> EliminarFoto([FromBody] EliminarFotoRequest request)
         => Responder(await _fotos.Eliminar(request));
+
+    // POST /api/salones/eliminar  { id, adminId }
+    // Mis salones: elimina el salón con sus fotos, paquetes, favoritas, solicitudes rechazadas y
+    // reservaciones no confirmadas. Solo el dueño; 2010 si tiene solicitudes pendientes o confirmadas.
+    // Después del COMMIT borra la carpeta de fotos como mejor esfuerzo (si falla, solo se registra).
+    [HttpPost("eliminar")]
+    public async Task<ActionResult<RespuestaApi<int>>> Eliminar([FromBody] EliminarSalonRequest request)
+    {
+        var respuesta = await _salones.Eliminar(request);
+        if (respuesta.Exito && !await _fotos.EliminarFotosDeSalon(request.Id))
+        {
+            _logger.LogWarning("Salón {SalonId} eliminado, pero no se pudo borrar su carpeta de fotos del almacenamiento.", request.Id);
+        }
+        return Responder(respuesta);
+    }
 }
 
 // Campos del multipart/form-data de subirFoto.

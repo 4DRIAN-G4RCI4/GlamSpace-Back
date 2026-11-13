@@ -167,16 +167,17 @@ public class DtosPruebas
     }
 
     [Fact]
-    public void SalonResumenResponse_SeSerializaConElTotalDePaquetes()
+    public void SalonResumenResponse_SeSerializaConElTotalDePaquetesYLaFotoPrincipal()
     {
         // Arreglar
-        var salon = new SalonResumenResponse { Id = 2, Nombre = "Terraza", Zona = "Tepeji", Capacidad = 80, Estado = "publicado", TotalPaquetes = 3 };
+        var salon = new SalonResumenResponse { Id = 2, Nombre = "Terraza", Zona = "Tepeji", Capacidad = 80, Estado = "publicado", TotalPaquetes = 3,
+            FotoPrincipal = "https://cuenta.blob.core.windows.net/fotos-salones/2/a.jpg", TotalFotos = 4 };
 
         // Actuar
         var json = System.Text.Json.JsonSerializer.Serialize(salon, OpcionesWeb);
 
         // Afirmar
-        Assert.Equal("{\"id\":2,\"nombre\":\"Terraza\",\"zona\":\"Tepeji\",\"capacidad\":80,\"estado\":\"publicado\",\"totalPaquetes\":3}", json);
+        Assert.Equal("{\"id\":2,\"nombre\":\"Terraza\",\"zona\":\"Tepeji\",\"capacidad\":80,\"estado\":\"publicado\",\"totalPaquetes\":3,\"fotoPrincipal\":\"https://cuenta.blob.core.windows.net/fotos-salones/2/a.jpg\",\"totalFotos\":4}", json);
     }
 
     [Fact]

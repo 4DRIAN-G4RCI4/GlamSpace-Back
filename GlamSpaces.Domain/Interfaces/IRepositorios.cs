@@ -18,6 +18,7 @@ public interface ISalonRepositorio
     Task<RespuestaPaginada<SalonResumenResponse>> Listar(ListarSalonesRequest request);
     Task<RespuestaPaginada<SalonBusquedaResponse>> Buscar(BuscarSalonesRequest request);
     Task<RespuestaApi<DisponibilidadResponse>> Disponibilidad(DisponibilidadRequest request);
+    Task<RespuestaApi<int>> Eliminar(EliminarSalonRequest request); // Datos = id eliminado
 }
 
 // HU-07 (fotos): registro de las fotos de un salón (la URL; el archivo vive en IAlmacenamientoFotos).

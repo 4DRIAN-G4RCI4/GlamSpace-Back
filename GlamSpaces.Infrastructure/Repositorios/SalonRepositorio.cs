@@ -130,6 +130,18 @@ public class SalonRepositorio : ISalonRepositorio
         };
         return RespuestaApi<DisponibilidadResponse>.Ok(disponibilidad, p.Mensaje());
     }
+
+    // Mis salones: el SP valida (2001, 2002, 2010) y borra todo en una transacción. Los archivos de
+    // las fotos se borran después, fuera de la BD (SalonesController).
+    public async Task<RespuestaApi<int>> Eliminar(EliminarSalonRequest request)
+    {
+        var p = StoredProcedure.Parametros(new { request.Id, request.AdminId });
+        await _db.ExecuteAsync("sp_Salon_Eliminar", p, commandType: CommandType.StoredProcedure);
+
+        return p.Codigo() == CodigosError.Exito
+            ? RespuestaApi<int>.Ok(request.Id, p.Mensaje())
+            : RespuestaApi<int>.Error(p.Codigo(), p.Mensaje());
+    }
 }
 
 // Renglón del tercer result set de sp_Salon_Buscar: una foto de vista previa de un salón de la página.
