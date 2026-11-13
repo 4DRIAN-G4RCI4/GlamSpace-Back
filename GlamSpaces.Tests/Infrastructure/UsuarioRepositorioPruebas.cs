@@ -108,6 +108,82 @@ public class UsuarioRepositorioPruebas
         Assert.Null(r2.Datos);
     }
 
+    private static DataTable Fila(string hash, string tipo) => ConexionFalsa.Tabla(
+        ("Id", 5), ("NombreCompleto", "Ana Pérez"), ("Correo", "ana@glamspaces.com"), ("PasswordHash", hash),
+        ("TipoCuenta", tipo), ("NombreSalon", null), ("FechaRegistro", new DateTime(2026, 11, 1)));
+
+    private static ConvertirAdministradorRequest Convertir(string contrasena, int id = 5) => new() { UsuarioId = id, Contrasena = contrasena };
+
+    [Fact]
+    public async Task ConvertirAAdministrador_ConContrasenaCorrecta_CambiaElRol()
+    {
+        // Arreglar: 1) credenciales del cliente, 2) el SP lo regresa como administrador
+        var conexion = new ConexionFalsa()
+            .Responder(0, "Consulta exitosa.", Fila(PasswordHasher.Hashear("Segura123"), "cliente"))
+            .Despues(0, "Tu cuenta ahora es de administrador.", Fila("x", "administrador"));
+
+        // Actuar
+        var r = await new UsuarioRepositorio(conexion).ConvertirAAdministrador(Convertir("Segura123"));
+
+        // Afirmar
+        Assert.Equal(["sp_Usuario_ObtenerCredenciales", "sp_Usuario_ConvertirAAdministrador"], conexion.ComandosEjecutados);
+        Assert.Equal(5, conexion.Parametros["Id"]);
+        Assert.False(conexion.Parametros.ContainsKey("Contrasena")); // la contraseña nunca va al SP
+        Assert.True(r.Exito);
+        Assert.Equal("Tu cuenta ahora es de administrador.", r.Mensaje);
+        Assert.Equal("administrador", r.Datos!.TipoCuenta);
+        Assert.Equal("ana@glamspaces.com", r.Datos.Correo);
+    }
+
+    [Fact]
+    public async Task ConvertirAAdministrador_UsuarioInexistente_Regresa1005SinConvertir()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(CodigosError.UsuarioNoEncontrado, "El usuario no existe.");
+
+        // Actuar
+        var r = await new UsuarioRepositorio(conexion).ConvertirAAdministrador(Convertir("Segura123", 999));
+
+        // Afirmar
+        Assert.Equal(CodigosError.UsuarioNoEncontrado, r.Codigo);
+        Assert.Null(r.Datos);
+        Assert.Equal(["sp_Usuario_ObtenerCredenciales"], conexion.ComandosEjecutados);
+    }
+
+    [Theory]
+    [InlineData("Otra1234")]
+    [InlineData("")]
+    public async Task ConvertirAAdministrador_ConContrasenaIncorrecta_Regresa1003SinConvertir(string contrasena)
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.", Fila(PasswordHasher.Hashear("Segura123"), "cliente"));
+
+        // Actuar
+        var r = await new UsuarioRepositorio(conexion).ConvertirAAdministrador(Convertir(contrasena));
+
+        // Afirmar
+        Assert.Equal(CodigosError.CredencialesIncorrectas, r.Codigo);
+        Assert.Equal("La contraseña es incorrecta.", r.Mensaje);
+        Assert.Equal(["sp_Usuario_ObtenerCredenciales"], conexion.ComandosEjecutados);
+    }
+
+    [Fact]
+    public async Task ConvertirAAdministrador_SiYaEsAdministrador_Regresa1006()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa()
+            .Responder(0, "Consulta exitosa.", Fila(PasswordHasher.Hashear("Segura123"), "administrador"))
+            .Despues(CodigosError.YaEsAdministrador, "La cuenta ya es de administrador.");
+
+        // Actuar
+        var r = await new UsuarioRepositorio(conexion).ConvertirAAdministrador(Convertir("Segura123"));
+
+        // Afirmar
+        Assert.Equal(CodigosError.YaEsAdministrador, r.Codigo);
+        Assert.Equal("La cuenta ya es de administrador.", r.Mensaje);
+        Assert.Null(r.Datos);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("1234567")] // 7 caracteres: uno menos del mínimo

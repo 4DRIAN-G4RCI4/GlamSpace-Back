@@ -209,4 +209,25 @@ public class SolicitudRepositorioPruebas
         Assert.Equal(2, r.TotalPaginas);
         Assert.Equal(3, Assert.Single(r.Datos!).Id);
     }
+
+    [Fact]
+    public async Task Listar_Y_ListarPorSalon_MapeanLaFotoPrincipalONull()
+    {
+        // Arreglar
+        static DataTable Paginado() => ConexionFalsa.Tabla(("TotalRegistros", 2), ("TotalPaginas", 1), ("Pagina", 1), ("TamanoPagina", 10));
+        static DataTable Pagina() => ConexionFalsa.Tabla([
+            [("Id", 8), ("SalonId", 1), ("NombreSalon", "Jardín"), ("Estado", "pendiente"), ("FotoPrincipal", "https://fotos/1/a.jpg")],
+            [("Id", 9), ("SalonId", 2), ("NombreSalon", "Terraza"), ("Estado", "pendiente"), ("FotoPrincipal", null)],
+        ]);
+        var cliente = new ConexionFalsa().Responder(0, "Consulta exitosa.", Paginado(), Pagina());
+        var admin = new ConexionFalsa().Responder(0, "Consulta exitosa.", Paginado(), Pagina());
+
+        // Actuar
+        var r1 = await new SolicitudRepositorio(cliente).Listar(new ListarSolicitudesRequest { ClienteId = 2 });
+        var r2 = await new SolicitudRepositorio(admin).ListarPorSalon(new ListarSolicitudesSalonRequest { SalonId = 1, AdminId = 3 });
+
+        // Afirmar
+        Assert.Equal(["https://fotos/1/a.jpg", null], r1.Datos!.Select(s => s.FotoPrincipal));
+        Assert.Equal(["https://fotos/1/a.jpg", null], r2.Datos!.Select(s => s.FotoPrincipal));
+    }
 }
