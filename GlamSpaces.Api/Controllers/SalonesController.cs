@@ -69,7 +69,7 @@ public class SalonesController : ApiControllerBase
     public async Task<ActionResult<RespuestaApi<FotoSalonResponse>>> SubirFoto([FromForm] SubirFotoRequest request)
     {
         await using var contenido = request.Archivo?.OpenReadStream();
-        return Responder(await _fotos.Subir(request.SalonId, request.AdminId, contenido, request.Archivo?.Length ?? 0));
+        return Responder(await _fotos.Subir(request.SalonId ?? 0, request.AdminId ?? 0, contenido, request.Archivo?.Length ?? 0));
     }
 
     // POST /api/salones/eliminarFoto  { salonId, fotoId, adminId }
@@ -94,10 +94,11 @@ public class SalonesController : ApiControllerBase
     }
 }
 
-// Campos del multipart/form-data de subirFoto.
+// Campos del multipart/form-data de subirFoto. Nullables para que un campo que falta se note
+// (Sonar S6964); el controller lo toma como 0, como siempre, y el SP responde con su código.
 public class SubirFotoRequest
 {
-    public int SalonId { get; set; }
-    public int AdminId { get; set; } // TODO: tomarlo del JWT cuando exista
+    public int? SalonId { get; set; }
+    public int? AdminId { get; set; } // TODO: tomarlo del JWT cuando exista
     public IFormFile? Archivo { get; set; }
 }

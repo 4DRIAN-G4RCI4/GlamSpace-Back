@@ -95,6 +95,9 @@ más del 90 %; lo único sin cubrir es abrir la `SqlConnection` real y el *healt
 de la BD, que necesitan SQL Server y no se prueban con pruebas unitarias. No hay código generado en el proyecto (las
 migraciones de FluentMigrator se escriben a mano y tienen sus propias pruebas).
 
+**Duplicación:** `Database/**` sale solo de la detección de duplicados (`sonar.cpd.exclusions`). Esos
+scripts repiten a propósito los SP completos con `CREATE OR ALTER` para que cada sprint corra solo en producción.
+
 ---
 
 ## Sprint 1 — Registro e inicio de sesión
