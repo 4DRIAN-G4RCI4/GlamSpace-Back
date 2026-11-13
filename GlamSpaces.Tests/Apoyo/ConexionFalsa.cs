@@ -107,6 +107,7 @@ public sealed class ComandoFalso(ConexionFalsa conexion) : DbCommand
     public override void Prepare() { }
     protected override DbParameter CreateDbParameter() => _parametros.CreateParameter();
     protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) => conexion.Ejecutar(this);
-    public override int ExecuteNonQuery() => throw new NotSupportedException();
+    // Un SP sin SELECT (ExecuteAsync): se registra igual y llena los OUTPUT.
+    public override int ExecuteNonQuery() { using var lector = conexion.Ejecutar(this); return 1; }
     public override object? ExecuteScalar() => throw new NotSupportedException();
 }
