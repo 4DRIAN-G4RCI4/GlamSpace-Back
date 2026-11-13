@@ -64,8 +64,14 @@ public class ListarSolicitudesSalonRequest : PaginacionRequest
     public string? Estado { get; set; } // "pendiente" (por defecto), "confirmada", "rechazada" o "todas"
 }
 
+// Renglón de los listados (listar y listarPorSalon): agrega la foto principal del salón.
+public class SolicitudListadoResponse : SolicitudResponse
+{
+    public string? FotoPrincipal { get; set; } // URL de la primera foto del salón (por Id); null si no tiene
+}
+
 // Solicitud vista por el administrador del salón: agrega quién la pidió y el precio del paquete.
-public class SolicitudAdminResponse : SolicitudResponse
+public class SolicitudAdminResponse : SolicitudListadoResponse
 {
     public string NombreCliente { get; set; } = string.Empty;
     public decimal? PrecioPaquete { get; set; } // null si no eligió paquete

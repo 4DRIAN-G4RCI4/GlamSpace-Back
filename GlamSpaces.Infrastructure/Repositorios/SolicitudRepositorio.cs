@@ -41,10 +41,10 @@ public class SolicitudRepositorio : ISolicitudRepositorio
         return p.Respuesta(solicitud, s => s);
     }
 
-    public async Task<RespuestaPaginada<SolicitudResponse>> Listar(ListarSolicitudesRequest request)
+    public async Task<RespuestaPaginada<SolicitudListadoResponse>> Listar(ListarSolicitudesRequest request)
     {
         var p = StoredProcedure.Parametros(new { request.ClienteId, request.Pagina, request.TamanoPagina });
-        return await _db.Paginado<SolicitudResponse>("sp_Solicitud_ListarPorCliente", p);
+        return await _db.Paginado<SolicitudListadoResponse>("sp_Solicitud_ListarPorCliente", p);
     }
 
     public Task<RespuestaApi<SolicitudAtendidaResponse>> Aceptar(AtenderSolicitudRequest request)

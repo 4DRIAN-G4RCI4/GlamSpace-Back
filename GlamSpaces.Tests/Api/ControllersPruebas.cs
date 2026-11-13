@@ -346,9 +346,9 @@ public class ControllersPruebas
         // Arreglar
         var repo = Substitute.For<ISolicitudRepositorio>();
         var request = new ListarSolicitudesRequest { ClienteId = 2, Pagina = 1, TamanoPagina = 10 };
-        repo.Listar(request).Returns(new RespuestaPaginada<SolicitudResponse>
+        repo.Listar(request).Returns(new RespuestaPaginada<SolicitudListadoResponse>
         {
-            Datos = [new SolicitudResponse { Id = 8, Estado = "pendiente" }, new SolicitudResponse { Id = 7, Estado = "rechazada" }],
+            Datos = [new SolicitudListadoResponse { Id = 8, Estado = "pendiente" }, new SolicitudListadoResponse { Id = 7, Estado = "rechazada" }],
             Pagina = 1,
             TamanoPagina = 10,
             TotalRegistros = 2,
@@ -360,7 +360,7 @@ public class ControllersPruebas
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);
-        Assert.Equal(2, Assert.IsType<RespuestaPaginada<SolicitudResponse>>(resultado.Value).TotalRegistros);
+        Assert.Equal(2, Assert.IsType<RespuestaPaginada<SolicitudListadoResponse>>(resultado.Value).TotalRegistros);
         await repo.Received(1).Listar(request);
     }
 
@@ -369,7 +369,7 @@ public class ControllersPruebas
     {
         // Arreglar
         var repo = Substitute.For<ISolicitudRepositorio>();
-        repo.Listar(Arg.Any<ListarSolicitudesRequest>()).Returns(new RespuestaPaginada<SolicitudResponse>
+        repo.Listar(Arg.Any<ListarSolicitudesRequest>()).Returns(new RespuestaPaginada<SolicitudListadoResponse>
         {
             Datos = [],
             Mensaje = "No tienes solicitudes registradas.",
@@ -380,7 +380,7 @@ public class ControllersPruebas
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);
-        var paginado = Assert.IsType<RespuestaPaginada<SolicitudResponse>>(resultado.Value);
+        var paginado = Assert.IsType<RespuestaPaginada<SolicitudListadoResponse>>(resultado.Value);
         Assert.Empty(paginado.Datos!);
         Assert.Equal("No tienes solicitudes registradas.", paginado.Mensaje);
     }
