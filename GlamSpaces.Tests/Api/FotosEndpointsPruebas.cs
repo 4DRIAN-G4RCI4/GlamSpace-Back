@@ -45,6 +45,24 @@ public sealed class FotosEndpointsPruebas : IDisposable
     }
 
     [Fact]
+    public async Task SubirFoto_SinSalonIdNiAdminId_LlegaComoCeroYRegresaElFormatoEstandar()
+    {
+        // Arreglar: el formulario solo trae el archivo
+        _fabrica.Almacenamiento.Subir(Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<string>()).Returns(UrlBlob);
+        _fabrica.Fotos.Agregar(0, 0, UrlBlob).Returns(RespuestaApi<FotoSalonResponse>.Error(CodigosError.SalonNoEncontrado, "El salón no existe."));
+        var form = new MultipartFormDataContent { { new ByteArrayContent(FormatoImagenPruebas.Jpg), "archivo", "foto.jpg" } };
+
+        // Actuar
+        var (status, cuerpo) = await Leer(await _fabrica.CreateClient().PostAsync("/api/salones/subirFoto", form));
+
+        // Afirmar: sin 400 de validación del framework; el SP decide, igual que antes
+        Assert.Equal(HttpStatusCode.NotFound, status);
+        Assert.Equal(CodigosError.SalonNoEncontrado, cuerpo.Codigo);
+        Assert.False(cuerpo.Exito);
+        await _fabrica.Fotos.Received(1).Agregar(0, 0, UrlBlob);
+    }
+
+    [Fact]
     public async Task SubirFoto_SinArchivo_Regresa400Con2005()
     {
         // Actuar
