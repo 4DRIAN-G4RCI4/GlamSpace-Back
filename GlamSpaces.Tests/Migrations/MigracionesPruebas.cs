@@ -32,6 +32,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M009_SolicitudesAdminHU18), 202611051100)]
     [InlineData(typeof(M010_FotosSalonHU07), 202611121000)]
     [InlineData(typeof(M011_FotosPreviewBuscar), 202611131000)]
+    [InlineData(typeof(M012_MisSalonesAdmin), 202611141000)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -453,6 +454,52 @@ public class MigracionesPruebas
         Assert.Contains("CREATE OR ALTER PROCEDURE sp_Salon_Buscar", sentencia);
         Assert.DoesNotContain("#Pagina", sentencia);
         Assert.DoesNotContain("ROW_NUMBER", sentencia);
+    }
+
+    [Fact]
+    public void M012_Up_EjecutaElScript14ConElListadoConFotosYElEliminar()
+    {
+        // Actuar
+        var sentencias = ExpresionesUp(new M012_MisSalonesAdmin()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+        var listar = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Salon_Listar"));
+        var eliminar = Assert.Single(sentencias, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Salon_Eliminar"));
+
+        // Afirmar: mismo contenido que el script; idempotente; sin tocar tablas.
+        Assert.Equal(ScriptsSql.Lotes(M012_MisSalonesAdmin.ScriptMisSalones), sentencias);
+        Assert.DoesNotContain(sentencias, s => s.Contains("CREATE TABLE") || s.Contains("ALTER TABLE"));
+        Assert.Contains("AS FotoPrincipal", listar);
+        Assert.Contains("AS TotalFotos", listar);
+        Assert.Contains("AS TotalPaquetes", listar);
+
+        // Validaciones y bloqueo: 2001, 2002, 2010 (pendientes/confirmadas o reservación confirmada) y 5000.
+        Assert.Contains("@Codigo = 2001", eliminar);
+        Assert.Contains("@Codigo = 2002", eliminar);
+        Assert.Contains("@Codigo = 2010", eliminar);
+        Assert.Contains("Estado IN ('pendiente', 'confirmada')", eliminar);
+        Assert.Contains("FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)", eliminar);
+        Assert.Contains("BEGIN TRY", eliminar);
+        Assert.Contains("IF @@TRANCOUNT > 0 ROLLBACK", eliminar);
+        Assert.Contains("@Codigo = 5000", eliminar);
+
+        // Borrado en el orden de las llaves foráneas (Solicitudes y Reservaciones apuntan a Paquetes).
+        string[] orden = ["DELETE FROM Solicitudes", "DELETE FROM Reservaciones", "DELETE FROM FotosSalon",
+                          "DELETE FROM Paquetes", "DELETE FROM BusquedasFavoritas", "DELETE FROM Salones", "COMMIT"];
+        var posiciones = orden.Select(o => eliminar.IndexOf(o, StringComparison.Ordinal)).ToList();
+        Assert.DoesNotContain(-1, posiciones);
+        Assert.Equal(posiciones.Order(), posiciones);
+    }
+
+    [Fact]
+    public void M012_Down_BorraElEliminarYRestauraElListadoDel02()
+    {
+        // Actuar
+        var sentencias = ExpresionesDown(new M012_MisSalonesAdmin()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+
+        // Afirmar
+        Assert.Equal(2, sentencias.Count);
+        Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Salon_Eliminar;", sentencias[0]);
+        Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M012_MisSalonesAdmin.ScriptBase, "sp_Salon_Listar"), sentencias[1]);
+        Assert.DoesNotContain("TotalFotos", sentencias[1]);
     }
 
     [Fact]

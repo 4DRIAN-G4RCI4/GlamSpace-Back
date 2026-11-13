@@ -85,9 +85,20 @@ public class FotosSalonServicio
         return await _fotos.Eliminar(request);
     }
 
-    // Borra todos los archivos del salón. Listo para cuando exista el endpoint de eliminar salón
-    // (hoy la API no elimina salones; no está conectado a ningún endpoint).
-    public Task EliminarFotosDeSalon(int salonId) => _almacenamiento.EliminarCarpetaDeSalon(salonId);
+    // Borra todos los archivos del salón (carpeta {salonId}/) después de eliminarlo de la BD.
+    // Mejor esfuerzo: si el almacenamiento falla regresa false y el salón ya quedó eliminado.
+    public async Task<bool> EliminarFotosDeSalon(int salonId)
+    {
+        try
+        {
+            await _almacenamiento.EliminarCarpetaDeSalon(salonId);
+            return true;
+        }
+        catch (ErrorAlmacenamiento)
+        {
+            return false;
+        }
+    }
 
     private async Task EliminarSinFallar(string url)
     {

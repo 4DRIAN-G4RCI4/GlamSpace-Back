@@ -18,6 +18,13 @@ public class ActualizarSalonRequest : SalonRequest
     public string? Estado { get; set; } // "publicado" o "no_publicado"
 }
 
+// POST /api/salones/eliminar
+public class EliminarSalonRequest
+{
+    public int Id { get; set; }
+    public int AdminId { get; set; } // TODO: tomarlo del JWT cuando exista
+}
+
 // POST /api/salones/listar
 public class ListarSalonesRequest : PaginacionRequest
 {
@@ -91,6 +98,8 @@ public class SalonResumenResponse
     public int Capacidad { get; set; }
     public string Estado { get; set; } = string.Empty;
     public int TotalPaquetes { get; set; }
+    public string? FotoPrincipal { get; set; } // primera foto (por Id); null si no tiene
+    public int TotalFotos { get; set; }
 }
 
 // Renglón de la búsqueda pública: lo que el cliente ve en la tarjeta del salón.

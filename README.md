@@ -84,6 +84,17 @@ dotnet test GlamSpaces.sln --collect:"XPlat Code Coverage;Format=opencover" --re
 El workflow de Sonar corre las mismas pruebas y sube la cobertura. Detalle: sección
 "Pruebas unitarias y cobertura" de [docs/CALIDAD_SONAR.md](docs/CALIDAD_SONAR.md).
 
+**Cobertura en SonarQube Cloud.** El análisis corre en cada push a `main` (rama principal del
+proyecto en Sonar) y en cada PR, y siempre sube el reporte OpenCover de `TestResults/`.
+Los repositorios se prueban con `ConexionFalsa` (Dapper real, sin BD), así que no hace falta
+excluir lógica de negocio, repositorios ni controladores.
+
+**Exclusiones de cobertura: ninguna.** Solo se excluyen `bin/` y `obj/` del análisis. Se evaluó
+excluir `Program.cs` (arranque), pero `FabricaApi` lo levanta en memoria y ya queda cubierto en
+más del 90 %; lo único sin cubrir es abrir la `SqlConnection` real y el *health check* exitoso
+de la BD, que necesitan SQL Server y no se prueban con pruebas unitarias. No hay código generado en el proyecto (las
+migraciones de FluentMigrator se escriben a mano y tienen sus propias pruebas).
+
 ---
 
 ## Sprint 1 — Registro e inicio de sesión
@@ -318,6 +329,7 @@ También responden con este formato el JSON mal formado (`1001`) y cualquier err
 | 2002 | 403 | No es el dueño del salón |
 | 2003 | 400 | Publicar un salón sin paquetes |
 | 2004 | 400 | Estado inválido |
+| 2010 | 409 | Eliminar un salón con solicitudes pendientes o confirmadas (o reservaciones confirmadas) |
 | 3001 | 404 | Paquete no encontrado |
 | 3002 | 400 | Borrar el último paquete de un salón publicado |
 | 4001 | 404 | Solicitud no encontrada |
@@ -1012,3 +1024,69 @@ Orden: valida (salón, dueño y que la foto sea de ese salón), borra el archivo
 3. Correr `Database/13_FotosPreviewBuscar.sql` en `glamspaces-db` para `fotosPreview`. La `M011` tampoco se registra en producción.
    Mientras no se corra, la API responde `fotosPreview: []`, así que el orden del deploy no importa.
 4. Evidencias: `docs/evidencias/32_hu07_fotos_pruebas.txt`, `33_hu07_fotos_api_local.txt` y `34_hu07_fotos_detalle_local.txt`.
+
+---
+
+## Sprint 7 — Mis salones del administrador (mejoras de HU-07 / HU-08)
+
+Son cambios aditivos: nada de lo que ya existía cambia de forma.
+
+### `POST /api/salones/listar` (cambio aditivo)
+
+Cada renglón trae dos campos nuevos al final:
+
+| Campo | Tipo | Valor |
+|---|---|---|
+| `fotoPrincipal` | string o `null` | La primera foto del salón (por Id, igual que la búsqueda); `null` si no tiene fotos. |
+| `totalFotos` | int | Cuántas fotos tiene el salón. |
+
+Salen en el mismo result set, así que no hay consultas N+1.
+
+```json
+{ "id": 12, "nombre": "Jardín Encanto", "zona": "Tula", "capacidad": 150, "estado": "publicado",
+  "totalPaquetes": 2, "fotoPrincipal": "https://…/fotos-salones/12/3f2a….jpg", "totalFotos": 3 }
+```
+
+### `POST /api/salones/eliminar` (nuevo)
+
+Body: `{ "id": int, "adminId": int }`. Respuesta con el formato estándar `{codigo, mensaje, datos, exito}`; en `datos` va el id del salón eliminado.
+
+| Código | HTTP | Mensaje |
+|---|---|---|
+| 0 | 200 | Salón eliminado correctamente. |
+| 2001 | 404 | El salón no existe. |
+| 2002 | 403 | No eres el dueño de este salón. |
+| **2010** | 409 | Tiene solicitudes pendientes o confirmadas; resuélvelas antes de eliminar el salón. |
+| 5000 | 500 | No se pudo eliminar el salón. Intenta de nuevo más tarde. |
+
+**Política** (en `sp_Salon_Eliminar`):
+
+- **No se elimina** si el salón tiene solicitudes `pendiente` o `confirmada`, o reservaciones `confirmada`. La revisión se hace dentro de la transacción con `UPDLOCK, HOLDLOCK`: si al mismo tiempo llega o se confirma una solicitud, una operación espera a la otra.
+- **Si se puede eliminar**, una sola transacción con `TRY/CATCH` y `ROLLBACK` borra todo en el orden que piden las llaves foráneas (todas `NO ACTION`):
+  1. Solicitudes: solo quedan rechazadas.
+  2. Reservaciones: pendientes o canceladas. Van antes que los paquetes porque apuntan a `Paquetes`.
+  3. Fotos (sus registros).
+  4. Paquetes.
+  5. Búsquedas favoritas.
+  6. El salón.
+- **Fotos en el almacenamiento:** después del `COMMIT`, la API borra la carpeta `{salonId}/` del contenedor como **mejor esfuerzo**. Si el almacenamiento falla, el salón ya quedó eliminado y la respuesta sigue siendo 0. Solo se registra un *warning* con el id del salón, sin cadenas de conexión ni URLs.
+
+### Paquetes (ya existían; no se tocaron)
+
+| Endpoint | Body | `datos` | Códigos |
+|---|---|---|---|
+| `/api/paquetes/crear` | `{ salonId, adminId, nombrePaquete, descripcion?, precio }` | Paquete | 0 "Paquete agregado correctamente." · 2001 · 2002 · 1001 (nombre obligatorio / precio > 0) |
+| `/api/paquetes/actualizar` | `{ id, adminId, nombrePaquete, descripcion?, precio }` | Paquete | 0 "Paquete actualizado correctamente." · 3001 · 2002 · 1001 |
+| `/api/paquetes/eliminar` | `{ id, adminId }` | Id del paquete | 0 "Paquete eliminado correctamente." · 3001 · 2002 · 3002 (último paquete de un salón publicado) |
+
+En los tres, 2002 responde "Solo el administrador dueño del salón puede modificarlo.".
+
+### Base de datos
+
+`Database/14_MisSalonesAdmin.sql` y la migración `M012_MisSalonesAdmin` son idempotentes (`CREATE OR ALTER`) y no cambian tablas. El `Down()` de la 012 borra `sp_Salon_Eliminar` y restaura `sp_Salon_Listar` de `02_StoredProcedures.sql`.
+
+**Para desplegar:** correr `Database/14_MisSalonesAdmin.sql` en `glamspaces-db`. La `M012` no se registra en producción.
+
+- **Si la API nueva se despliega antes del script:** `listar` responde `fotoPrincipal: null` y `totalFotos: 0`, y `eliminar` responde 5000 porque el SP todavía no existe.
+
+Evidencia: `docs/evidencias/36_mis_salones_local.txt`.

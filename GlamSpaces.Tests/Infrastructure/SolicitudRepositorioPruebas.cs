@@ -112,4 +112,101 @@ public class SolicitudRepositorioPruebas
         Assert.Empty(respuesta.Datos!);
         Assert.Null(conexion.Parametros["Estado"]); // sin estado, el SP usa "pendiente"
     }
+
+    private static DataTable SolicitudFila(int id) => ConexionFalsa.Tabla(
+        ("Id", id), ("SalonId", 1), ("NombreSalon", "Jardín Encanto"), ("ClienteId", 2), ("PaqueteId", 9),
+        ("NombrePaquete", "Básico"), ("FechaEvento", Fecha), ("TipoEvento", "Boda"), ("NumeroInvitados", 120),
+        ("TelefonoContacto", "7711234567"), ("Comentarios", "Sin comentarios"), ("Estado", "pendiente"));
+
+    [Fact]
+    public async Task Crear_MandaSoloLaFechaDelEventoYRegresaLaSolicitud()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(0, "Solicitud enviada.", SolicitudFila(15));
+        var request = new CrearSolicitudRequest
+        {
+            ClienteId = 2, SalonId = 1, PaqueteId = 9, FechaEvento = Fecha.AddHours(18).AddMinutes(30),
+            TipoEvento = "Boda", NumeroInvitados = 120, TelefonoContacto = "7711234567", Comentarios = "Sin comentarios",
+        };
+
+        // Actuar
+        var r = await new SolicitudRepositorio(conexion).Crear(request);
+
+        // Afirmar
+        Assert.Equal("sp_Solicitud_Crear", conexion.ComandoEjecutado);
+        Assert.Equal(Fecha, conexion.Parametros["FechaEvento"]); // sin la hora
+        Assert.Equal(2, conexion.Parametros["ClienteId"]);
+        Assert.Equal(9, conexion.Parametros["PaqueteId"]);
+        Assert.Equal("7711234567", conexion.Parametros["TelefonoContacto"]);
+        Assert.True(r.Exito);
+        Assert.Equal(15, r.Datos!.Id);
+        Assert.Equal("Básico", r.Datos.NombrePaquete);
+    }
+
+    [Theory]
+    [InlineData(CodigosError.FechaNoDisponible, "La fecha ya no está disponible.")]
+    [InlineData(CodigosError.NoEsCliente, "Solo los clientes pueden enviar solicitudes.")]
+    [InlineData(CodigosError.SolicitudDuplicada, "Ya enviaste una solicitud para esa fecha.")]
+    public async Task Crear_ConErrorDelSp_RegresaElCodigoSinDatos(int codigo, string mensaje)
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(codigo, mensaje);
+
+        // Actuar
+        var r = await new SolicitudRepositorio(conexion).Crear(new CrearSolicitudRequest { ClienteId = 2, SalonId = 1, FechaEvento = Fecha });
+
+        // Afirmar
+        Assert.Equal(codigo, r.Codigo);
+        Assert.Equal(mensaje, r.Mensaje);
+        Assert.Null(r.Datos);
+    }
+
+    [Fact]
+    public async Task Obtener_MandaElIdYElClienteYRegresaLaSolicitud()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.", SolicitudFila(15));
+
+        // Actuar
+        var r = await new SolicitudRepositorio(conexion).Obtener(new ObtenerSolicitudRequest { Id = 15, ClienteId = 2 });
+
+        // Afirmar
+        Assert.Equal("sp_Solicitud_Obtener", conexion.ComandoEjecutado);
+        Assert.Equal(15, conexion.Parametros["Id"]);
+        Assert.Equal(2, conexion.Parametros["ClienteId"]);
+        Assert.Equal("Jardín Encanto", r.Datos!.NombreSalon);
+    }
+
+    [Fact]
+    public async Task Obtener_SolicitudAjena_Regresa4005SinDatos()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(CodigosError.SolicitudAjena, "La solicitud no es tuya.");
+
+        // Actuar
+        var r = await new SolicitudRepositorio(conexion).Obtener(new ObtenerSolicitudRequest { Id = 15, ClienteId = 99 });
+
+        // Afirmar
+        Assert.Equal(CodigosError.SolicitudAjena, r.Codigo);
+        Assert.Null(r.Datos);
+    }
+
+    [Fact]
+    public async Task Listar_MandaLaPaginacionYMapeaLaPagina()
+    {
+        // Arreglar
+        var paginado = ConexionFalsa.Tabla(("TotalRegistros", 11), ("TotalPaginas", 2), ("Pagina", 2), ("TamanoPagina", 10));
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.", paginado, SolicitudFila(3));
+
+        // Actuar
+        var r = await new SolicitudRepositorio(conexion).Listar(new ListarSolicitudesRequest { ClienteId = 2, Pagina = 2, TamanoPagina = 10 });
+
+        // Afirmar
+        Assert.Equal("sp_Solicitud_ListarPorCliente", conexion.ComandoEjecutado);
+        Assert.Equal(2, conexion.Parametros["ClienteId"]);
+        Assert.Equal(2, conexion.Parametros["Pagina"]);
+        Assert.Equal(11, r.TotalRegistros);
+        Assert.Equal(2, r.TotalPaginas);
+        Assert.Equal(3, Assert.Single(r.Datos!).Id);
+    }
 }

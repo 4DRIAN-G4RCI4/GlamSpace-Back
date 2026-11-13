@@ -26,6 +26,8 @@
     <EmbeddedResource Include="..\Database\12_FotosSalonHU07.sql" LogicalName="Database.12_FotosSalonHU07.sql" />
     <!-- 011 (HU-07 fotos, fotosPreview) ejecuta el 13; su Down() restaura sp_Salon_Buscar del 02. -->
     <EmbeddedResource Include="..\Database\13_FotosPreviewBuscar.sql" LogicalName="Database.13_FotosPreviewBuscar.sql" />
+    <!-- 012 (Mis salones) ejecuta el 14; su Down() restaura sp_Salon_Listar del 02. -->
+    <EmbeddedResource Include="..\Database\14_MisSalonesAdmin.sql" LogicalName="Database.14_MisSalonesAdmin.sql" />
   </ItemGroup>
 
   <!-- Permite que GlamSpaces.Tests pruebe las clases internal de este proyecto. -->

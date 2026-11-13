@@ -131,4 +131,175 @@ public class SalonRepositorioPruebas
     }
 
     private static DataTable Vacia(DataTable t) { t.Rows.Clear(); return t; }
+
+    private static DataTable SalonFila(string nombre) => ConexionFalsa.Tabla(("Id", 12), ("AdminId", 3), ("Nombre", nombre),
+        ("Zona", "Tula"), ("Capacidad", 150), ("Descripcion", "Con jardín"), ("Estado", "publicado"), ("FechaCreacion", new DateTime(2026, 10, 2)));
+
+    [Fact]
+    public async Task Crear_MandaLosDatosAlSpYRegresaElSalon()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(0, "Salón creado correctamente.", SalonFila("Jardín Encanto"));
+        var request = new SalonRequest { AdminId = 3, Nombre = "Jardín Encanto", Zona = "Tula", Capacidad = 150, Descripcion = "Con jardín" };
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Crear(request);
+
+        // Afirmar
+        Assert.Equal("sp_Salon_Crear", conexion.ComandoEjecutado);
+        Assert.Equal(3, conexion.Parametros["AdminId"]);
+        Assert.Equal(150, conexion.Parametros["Capacidad"]);
+        Assert.True(r.Exito);
+        Assert.Equal(12, r.Datos!.Id);
+    }
+
+    [Fact]
+    public async Task Crear_NoEsAdministrador_RegresaElCodigoSinDatos()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(CodigosError.NoEsAdministrador, "Solo un administrador puede crear salones.");
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Crear(new SalonRequest { AdminId = 2, Nombre = "X", Zona = "Tula", Capacidad = 10 });
+
+        // Afirmar
+        Assert.Equal(CodigosError.NoEsAdministrador, r.Codigo);
+        Assert.Null(r.Datos);
+    }
+
+    [Fact]
+    public async Task Actualizar_ConExito_RegresaElDetalleCompletoConElMensajeDeActualizar()
+    {
+        // Arreglar: después del SP de actualizar se lee el detalle (salón, paquetes y fotos).
+        var paquetes = ConexionFalsa.Tabla(("Id", 9), ("SalonId", 12), ("NombrePaquete", "Básico"), ("Descripcion", "x"), ("Precio", 8500m));
+        var fotos = ConexionFalsa.Tabla(("Id", 40), ("SalonId", 12), ("Url", "https://cuenta.blob.core.windows.net/fotos-salones/12/a.jpg"));
+        var conexion = new ConexionFalsa().Responder(0, "Salón actualizado correctamente.", SalonFila("Jardín Renovado"), paquetes, fotos);
+        var request = new ActualizarSalonRequest { Id = 12, AdminId = 3, Nombre = "Jardín Renovado", Zona = "Tula", Capacidad = 150, Estado = "publicado" };
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Actualizar(request);
+
+        // Afirmar
+        Assert.Equal("sp_Salon_Obtener", conexion.ComandoEjecutado); // el último comando es la relectura
+        Assert.True(r.Exito);
+        Assert.Equal("Jardín Renovado", r.Datos!.Nombre);
+        Assert.Single(r.Datos.Paquetes);
+        Assert.Equal("Salón actualizado correctamente.", r.Mensaje);
+    }
+
+    [Fact]
+    public async Task Actualizar_DeOtroAdministrador_RegresaElErrorSinReleerElSalon()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(CodigosError.NoEsDueno, "No eres el dueño de este salón.");
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Actualizar(new ActualizarSalonRequest { Id = 12, AdminId = 9, Nombre = "X", Zona = "Tula", Capacidad = 10 });
+
+        // Afirmar
+        Assert.Equal("sp_Salon_Actualizar", conexion.ComandoEjecutado);
+        Assert.Equal(9, conexion.Parametros["AdminId"]);
+        Assert.Equal(CodigosError.NoEsDueno, r.Codigo);
+        Assert.Null(r.Datos);
+    }
+
+    [Fact]
+    public async Task Listar_MandaElAdminYLaPaginacionYMapeaLosSalones()
+    {
+        // Arreglar
+        var pagina = ConexionFalsa.Tabla([
+            [("Id", 12), ("Nombre", "Jardín Encanto"), ("Zona", "Tula"), ("Capacidad", 150), ("Estado", "publicado"),
+             ("TotalPaquetes", 2), ("FotoPrincipal", "https://cuenta.blob.core.windows.net/fotos-salones/12/a.jpg"), ("TotalFotos", 3)],
+            [("Id", 11), ("Nombre", "Terraza"), ("Zona", "Tula"), ("Capacidad", 80), ("Estado", "no_publicado"),
+             ("TotalPaquetes", 0), ("FotoPrincipal", null), ("TotalFotos", 0)],
+        ]);
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.", Paginado(1), pagina);
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Listar(new ListarSalonesRequest { AdminId = 3, Pagina = 1, TamanoPagina = 10 });
+
+        // Afirmar
+        Assert.Equal("sp_Salon_Listar", conexion.ComandoEjecutado);
+        Assert.Equal(3, conexion.Parametros["AdminId"]);
+        Assert.Equal(1, r.TotalRegistros);
+        Assert.Equal(2, r.Datos![0].TotalPaquetes);
+        // Mis salones: miniatura y número de fotos en el mismo result set (sin N+1)
+        Assert.EndsWith("/12/a.jpg", r.Datos[0].FotoPrincipal);
+        Assert.Equal(3, r.Datos[0].TotalFotos);
+        Assert.Null(r.Datos[1].FotoPrincipal);
+        Assert.Equal(0, r.Datos[1].TotalFotos);
+    }
+
+    [Fact]
+    public async Task Eliminar_ConExito_MandaIdYDuenoYRegresaElId()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(0, "Salón eliminado correctamente.");
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Eliminar(new EliminarSalonRequest { Id = 12, AdminId = 3 });
+
+        // Afirmar
+        Assert.Equal("sp_Salon_Eliminar", conexion.ComandoEjecutado);
+        Assert.Equal(CommandType.StoredProcedure, conexion.TipoDeComando);
+        Assert.Equal(12, conexion.Parametros["Id"]);
+        Assert.Equal(3, conexion.Parametros["AdminId"]);
+        Assert.True(r.Exito);
+        Assert.Equal(12, r.Datos);
+        Assert.Equal("Salón eliminado correctamente.", r.Mensaje);
+    }
+
+    [Theory]
+    [InlineData(CodigosError.SalonNoEncontrado, "El salón no existe.")]
+    [InlineData(CodigosError.NoEsDueno, "No eres el dueño de este salón.")]
+    [InlineData(CodigosError.SalonConSolicitudesActivas, "Tiene solicitudes pendientes o confirmadas; resuélvelas antes de eliminar el salón.")]
+    [InlineData(CodigosError.ErrorInterno, "No se pudo eliminar el salón. Intenta de nuevo más tarde.")]
+    public async Task Eliminar_ConErrorDelSp_RegresaElCodigoYElMensaje(int codigo, string mensaje)
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(codigo, mensaje);
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Eliminar(new EliminarSalonRequest { Id = 12, AdminId = 9 });
+
+        // Afirmar
+        Assert.False(r.Exito);
+        Assert.Equal(codigo, r.Codigo);
+        Assert.Equal(mensaje, r.Mensaje);
+    }
+
+    [Fact]
+    public async Task Disponibilidad_RegresaLasFechasOcupadasComoTexto()
+    {
+        // Arreglar
+        var fechas = ConexionFalsa.Tabla([
+            [("FechaEvento", new DateTime(2026, 12, 5))],
+            [("FechaEvento", new DateTime(2026, 12, 19))],
+        ]);
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.", fechas);
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Disponibilidad(new DisponibilidadRequest { SalonId = 12, Anio = 2026, Mes = 12 });
+
+        // Afirmar
+        Assert.Equal("sp_Salon_Disponibilidad", conexion.ComandoEjecutado);
+        Assert.Equal(12, conexion.Parametros["Mes"]);
+        Assert.True(r.Exito);
+        Assert.Equal(["2026-12-05", "2026-12-19"], r.Datos!.FechasOcupadas);
+        Assert.Equal(2026, r.Datos.Anio);
+    }
+
+    [Fact]
+    public async Task Disponibilidad_SalonInexistente_Regresa2001SinDatos()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(CodigosError.SalonNoEncontrado, "El salón no existe.");
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Disponibilidad(new DisponibilidadRequest { SalonId = 999, Anio = 2026, Mes = 12 });
+
+        // Afirmar
+        Assert.Equal(CodigosError.SalonNoEncontrado, r.Codigo);
+        Assert.Null(r.Datos);
+    }
 }

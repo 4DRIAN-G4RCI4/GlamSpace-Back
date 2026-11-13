@@ -232,10 +232,25 @@ public class FotosSalonServicioPruebas
         await Servicio.Subir(40, 3, Archivo(FormatoImagenPruebas.Webp), FormatoImagenPruebas.Webp.Length);
 
         // Actuar
-        await Servicio.EliminarFotosDeSalon(4);
+        var borrada = await Servicio.EliminarFotosDeSalon(4);
 
         // Afirmar: la carpeta "40/" no se toca aunque empiece con "4"
+        Assert.True(borrada);
         Assert.Equal([4], _almacen.CarpetasEliminadas);
         Assert.StartsWith("40/", Assert.Single(_almacen.Archivos).Key);
+    }
+
+    [Fact]
+    public async Task EliminarFotosDeSalon_SiElAlmacenamientoFalla_RegresaFalseSinLanzar()
+    {
+        // Arreglar
+        _almacen.FallarAlEliminar = true;
+
+        // Actuar
+        var borrada = await Servicio.EliminarFotosDeSalon(4);
+
+        // Afirmar: mejor esfuerzo; el salón ya se eliminó de la BD
+        Assert.False(borrada);
+        Assert.Empty(_almacen.CarpetasEliminadas);
     }
 }

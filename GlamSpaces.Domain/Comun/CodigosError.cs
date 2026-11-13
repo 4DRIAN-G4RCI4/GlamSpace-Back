@@ -24,6 +24,8 @@ public static class CodigosError
     public const int FotoMuyPesada = 2007;
     public const int LimiteDeFotos = 2008;
     public const int FotoNoEncontrada = 2009;
+    // Mis salones: no se elimina un salón con solicitudes pendientes o confirmadas.
+    public const int SalonConSolicitudesActivas = 2010;
 
     // 3xxx: paquetes
     public const int PaqueteNoEncontrado = 3001;
