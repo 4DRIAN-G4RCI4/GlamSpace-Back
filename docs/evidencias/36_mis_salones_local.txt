@@ -1,0 +1,46 @@
+Mis salones del administrador (Sprint 7): listar con fotoPrincipal/totalFotos y eliminar salón
+Fecha: 12/11/2026 · Entorno: LocalDB (GlamSpacesMigraciones) + API local http://localhost:5080
+Nunca se usó producción. Almacenamiento: UseDevelopmentStorage=true SIN emulador, a propósito, para
+probar con datos reales que una falla del almacenamiento no revierte la eliminación.
+
+1) Llaves foráneas reales (sys.foreign_keys), todas NO ACTION
+   Paquetes      <- Reservaciones.PaqueteId, Solicitudes.PaqueteId
+   Salones       <- BusquedasFavoritas, FotosSalon, Paquetes, Reservaciones, Solicitudes
+   => orden de borrado: Solicitudes, Reservaciones, FotosSalon, Paquetes, BusquedasFavoritas, Salones
+
+2) Migración y script 14
+   scripts/migraciones.ps1 subir      -> 202611141000: M012_MisSalonesAdmin migrated
+   sqlcmd -i Database/14_MisSalonesAdmin.sql (vez 1) -> exit 0
+   sqlcmd -i Database/14_MisSalonesAdmin.sql (vez 2) -> exit 0
+   scripts/migraciones.ps1 rollback   -> M012_MisSalonesAdmin reverted
+     verificación: "eliminar: borrado" | "listar: restaurado" (sin TotalFotos)
+   scripts/migraciones.ps1 subir      -> M012_MisSalonesAdmin migrated (VersionInfo: 202611141000)
+
+3) Datos de prueba (marcados [E2E-MIS], admin 7, cliente 40)
+   Salón 6011 creado por la API + 1 paquete por la API; por SQL: 2 fotos, 1 favorita,
+   1 solicitud 'rechazada' y 1 reservación 'cancelada'.
+   Antes: salon=1 paq=1 fotos=2 fav=1 sol=1 res=1
+
+4) POST /api/salones/listar { adminId: 7, pagina: 1, tamanoPagina: 2 }
+   {"id":6011,...,"totalPaquetes":1,"fotoPrincipal":"https://ejemplo.e2e/6011/a.jpg","totalFotos":2}
+   {"id":7,"nombre":"[Prueba] Jardín Oculto",...,"totalPaquetes":1,"fotoPrincipal":null,"totalFotos":0}
+
+5) POST /api/salones/eliminar
+   { id: 999999, adminId: 7 } -> HTTP 404 {"codigo":2001,"mensaje":"El salón no existe.","exito":false}
+   { id: 6011,   adminId: 43 } -> HTTP 403 {"codigo":2002,"mensaje":"No eres el dueño de este salón.","exito":false}
+   { id: 2,      adminId: 7 }  (CON solicitudes pendiente y confirmada)
+                              -> HTTP 409 {"codigo":2010,"mensaje":"Tiene solicitudes pendientes o confirmadas; resuélvelas antes de eliminar el salón.","exito":false}
+                                 después: salón 2 sigue, 4 solicitudes y 2 paquetes (no cambió nada)
+   { id: 6011,   adminId: 7 }  (SIN solicitudes activas: solo rechazada + reservación cancelada)
+                              -> HTTP 200 {"codigo":0,"mensaje":"Salón eliminado correctamente.","datos":6011,"exito":true}
+                                 después: salon=0 paq=0 fotos=0 fav=0 sol=0 res=0
+   Log de la API (almacenamiento sin emulador):
+     warn: GlamSpaces.Api.Controllers.SalonesController[0]
+           Salón 6011 eliminado, pero no se pudo borrar su carpeta de fotos del almacenamiento.
+   (sin cadena de conexión ni URLs en el log; la respuesta tardó ~35 s por los reintentos del SDK
+    contra un emulador apagado; con el almacenamiento disponible no hay reintentos)
+
+6) Pruebas: dotnet test GlamSpaces.sln -> 250 de 250 correctas
+   Cobertura local (OpenCover): 99.5 % (1080/1085 líneas)
+   Nuevas: EliminarSalonPruebas (controller + HTTP), SalonRepositorio Eliminar/Listar,
+   FotosSalonServicio (falla del almacenamiento), M012 Up/Down y versión.
