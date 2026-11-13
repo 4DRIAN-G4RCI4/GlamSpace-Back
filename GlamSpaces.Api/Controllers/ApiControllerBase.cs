@@ -13,7 +13,8 @@ public abstract class ApiControllerBase : ControllerBase
         CodigosError.UsuarioNoEncontrado or CodigosError.SalonNoEncontrado or CodigosError.PaqueteNoEncontrado
             or CodigosError.SolicitudNoEncontrada or CodigosError.FotoNoEncontrada => StatusCodes.Status404NotFound,
         CodigosError.CorreoDuplicado or CodigosError.FechaNoDisponible or CodigosError.SolicitudDuplicada
-            or CodigosError.SolicitudYaAtendida or CodigosError.LimiteDeFotos => StatusCodes.Status409Conflict,
+            or CodigosError.SolicitudYaAtendida or CodigosError.LimiteDeFotos
+            or CodigosError.SalonConSolicitudesActivas => StatusCodes.Status409Conflict,
         CodigosError.FotoMuyPesada => StatusCodes.Status413PayloadTooLarge,
         CodigosError.FormatoFotoInvalido => StatusCodes.Status415UnsupportedMediaType,
         CodigosError.ErrorInterno => StatusCodes.Status500InternalServerError,

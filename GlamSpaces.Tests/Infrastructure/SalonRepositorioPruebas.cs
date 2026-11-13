@@ -207,8 +207,12 @@ public class SalonRepositorioPruebas
     public async Task Listar_MandaElAdminYLaPaginacionYMapeaLosSalones()
     {
         // Arreglar
-        var pagina = ConexionFalsa.Tabla(("Id", 12), ("Nombre", "Jardín Encanto"), ("Zona", "Tula"), ("Capacidad", 150),
-            ("Estado", "publicado"), ("TotalPaquetes", 2));
+        var pagina = ConexionFalsa.Tabla([
+            [("Id", 12), ("Nombre", "Jardín Encanto"), ("Zona", "Tula"), ("Capacidad", 150), ("Estado", "publicado"),
+             ("TotalPaquetes", 2), ("FotoPrincipal", "https://cuenta.blob.core.windows.net/fotos-salones/12/a.jpg"), ("TotalFotos", 3)],
+            [("Id", 11), ("Nombre", "Terraza"), ("Zona", "Tula"), ("Capacidad", 80), ("Estado", "no_publicado"),
+             ("TotalPaquetes", 0), ("FotoPrincipal", null), ("TotalFotos", 0)],
+        ]);
         var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.", Paginado(1), pagina);
 
         // Actuar
@@ -218,7 +222,50 @@ public class SalonRepositorioPruebas
         Assert.Equal("sp_Salon_Listar", conexion.ComandoEjecutado);
         Assert.Equal(3, conexion.Parametros["AdminId"]);
         Assert.Equal(1, r.TotalRegistros);
-        Assert.Equal(2, Assert.Single(r.Datos!).TotalPaquetes);
+        Assert.Equal(2, r.Datos![0].TotalPaquetes);
+        // Mis salones: miniatura y número de fotos en el mismo result set (sin N+1)
+        Assert.EndsWith("/12/a.jpg", r.Datos[0].FotoPrincipal);
+        Assert.Equal(3, r.Datos[0].TotalFotos);
+        Assert.Null(r.Datos[1].FotoPrincipal);
+        Assert.Equal(0, r.Datos[1].TotalFotos);
+    }
+
+    [Fact]
+    public async Task Eliminar_ConExito_MandaIdYDuenoYRegresaElId()
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(0, "Salón eliminado correctamente.");
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Eliminar(new EliminarSalonRequest { Id = 12, AdminId = 3 });
+
+        // Afirmar
+        Assert.Equal("sp_Salon_Eliminar", conexion.ComandoEjecutado);
+        Assert.Equal(CommandType.StoredProcedure, conexion.TipoDeComando);
+        Assert.Equal(12, conexion.Parametros["Id"]);
+        Assert.Equal(3, conexion.Parametros["AdminId"]);
+        Assert.True(r.Exito);
+        Assert.Equal(12, r.Datos);
+        Assert.Equal("Salón eliminado correctamente.", r.Mensaje);
+    }
+
+    [Theory]
+    [InlineData(CodigosError.SalonNoEncontrado, "El salón no existe.")]
+    [InlineData(CodigosError.NoEsDueno, "No eres el dueño de este salón.")]
+    [InlineData(CodigosError.SalonConSolicitudesActivas, "Tiene solicitudes pendientes o confirmadas; resuélvelas antes de eliminar el salón.")]
+    [InlineData(CodigosError.ErrorInterno, "No se pudo eliminar el salón. Intenta de nuevo más tarde.")]
+    public async Task Eliminar_ConErrorDelSp_RegresaElCodigoYElMensaje(int codigo, string mensaje)
+    {
+        // Arreglar
+        var conexion = new ConexionFalsa().Responder(codigo, mensaje);
+
+        // Actuar
+        var r = await new SalonRepositorio(conexion).Eliminar(new EliminarSalonRequest { Id = 12, AdminId = 9 });
+
+        // Afirmar
+        Assert.False(r.Exito);
+        Assert.Equal(codigo, r.Codigo);
+        Assert.Equal(mensaje, r.Mensaje);
     }
 
     [Fact]
