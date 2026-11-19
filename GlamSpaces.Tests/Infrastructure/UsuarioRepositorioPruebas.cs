@@ -90,6 +90,34 @@ public class UsuarioRepositorioPruebas
     }
 
     [Fact]
+    public async Task Login_SinContrasena_RegresaElMensajeGenerico()
+    {
+        // Arreglar: un JSON con "password": null
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.", UsuarioFila(PasswordHasher.Hashear("Segura123")));
+
+        // Actuar
+        var r = await new UsuarioRepositorio(conexion).Login(new LoginRequest { Correo = "ana@glamspaces.com", Password = null! });
+
+        // Afirmar
+        Assert.Equal(CodigosError.CredencialesIncorrectas, r.Codigo);
+        Assert.Null(r.Datos);
+    }
+
+    [Fact]
+    public async Task ConvertirAAdministrador_SinContrasena_Regresa1003SinConvertir()
+    {
+        // Arreglar: un JSON con "contrasena": null
+        var conexion = new ConexionFalsa().Responder(0, "Consulta exitosa.", Fila(PasswordHasher.Hashear("Segura123"), "cliente"));
+
+        // Actuar
+        var r = await new UsuarioRepositorio(conexion).ConvertirAAdministrador(new ConvertirAdministradorRequest { UsuarioId = 5, Contrasena = null! });
+
+        // Afirmar
+        Assert.Equal(CodigosError.CredencialesIncorrectas, r.Codigo);
+        Assert.Equal(["sp_Usuario_ObtenerCredenciales"], conexion.ComandosEjecutados);
+    }
+
+    [Fact]
     public async Task Obtener_RegresaElUsuarioOElCodigoDelSp()
     {
         // Arreglar
