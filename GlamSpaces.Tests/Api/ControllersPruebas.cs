@@ -62,6 +62,37 @@ public class ControllersPruebas
     }
 
     [Fact]
+    public async Task Usuarios_ConvertirAAdministrador_Exitoso_Regresa200ConElNuevoRol()
+    {
+        // Arreglar
+        var repo = Substitute.For<IUsuarioRepositorio>();
+        var request = new ConvertirAdministradorRequest { UsuarioId = 4, Contrasena = "glam2026" };
+        repo.ConvertirAAdministrador(request).Returns(Exito(new UsuarioResponse { Id = 4, TipoCuenta = "administrador" }));
+
+        // Actuar
+        var resultado = Resultado(await new UsuariosController(repo).ConvertirAAdministrador(request));
+
+        // Afirmar
+        Assert.Equal(200, resultado.StatusCode);
+        Assert.Equal("administrador", Assert.IsType<RespuestaApi<UsuarioResponse>>(resultado.Value).Datos!.TipoCuenta);
+    }
+
+    [Fact]
+    public async Task Usuarios_ConvertirAAdministrador_YaEsAdministrador_Regresa409()
+    {
+        // Arreglar
+        var repo = Substitute.For<IUsuarioRepositorio>();
+        repo.ConvertirAAdministrador(Arg.Any<ConvertirAdministradorRequest>())
+            .Returns(RespuestaApi<UsuarioResponse>.Error(CodigosError.YaEsAdministrador, "La cuenta ya es de administrador."));
+
+        // Actuar
+        var resultado = Resultado(await new UsuariosController(repo).ConvertirAAdministrador(new ConvertirAdministradorRequest()));
+
+        // Afirmar
+        Assert.Equal(409, resultado.StatusCode);
+    }
+
+    [Fact]
     public async Task Usuarios_Obtener_PasaElIdAlRepositorio()
     {
         // Arreglar
