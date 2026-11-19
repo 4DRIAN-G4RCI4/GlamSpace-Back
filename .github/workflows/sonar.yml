@@ -24,6 +24,17 @@ jobs:
     name: Análisis SonarQube Cloud
     runs-on: ubuntu-latest
 
+    # SQL Server en un contenedor, igual que en migraciones.yml: solo para las pruebas de la conexión
+    # por petición y del healthcheck de Program.cs (abren una conexión a "master"; no crean datos).
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: ${{ secrets.MSSQL_SA_PASSWORD }}
+        ports:
+          - 1433:1433
+
     steps:
       # Historial completo (sin clon superficial) para que Sonar asigne bien el código nuevo y el blame.
       - name: Checkout
@@ -56,6 +67,9 @@ jobs:
       # completos con CREATE OR ALTER para correrse solo en producción. Su cobertura y reglas no cambian.
       # GlamSpaces.Tests se clasifica como código de prueba con <SonarQubeTestProject> en su .csproj
       # (SonarScanner for .NET no admite sonar.test.inclusions).
+      # De la cobertura salen scripts/ (utilerías de PowerShell del workflow de migraciones) y Database/
+      # (scripts SQL que se corren a mano en producción): no son código de la API ni se ejecutan en pruebas
+      # unitarias. Los SP sí se prueban en migraciones.yml contra un SQL Server real.
       - name: Iniciar análisis
         run: >
           dotnet sonarscanner begin
@@ -65,13 +79,32 @@ jobs:
           /d:sonar.host.url="https://sonarcloud.io"
           /d:sonar.exclusions="**/bin/**,**/obj/**"
           /d:sonar.cpd.exclusions="Database/**"
+          /d:sonar.coverage.exclusions="scripts/**,Database/**"
           /d:sonar.cs.opencover.reportsPaths="TestResults/**/coverage.opencover.xml"
 
       - name: Compilar
         run: dotnet build GlamSpaces.sln
 
-      # Pruebas unitarias sin base de datos (los repositorios se sustituyen por dobles).
+      # SQL Server tarda unos segundos en arrancar dentro del contenedor.
+      - name: Esperar a que SQL Server acepte conexiones
+        env:
+          SA_PASSWORD: ${{ secrets.MSSQL_SA_PASSWORD }}
+        run: |
+          for intento in $(seq 1 30); do
+            if docker exec ${{ job.services.sqlserver.id }}                  /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -Q "SELECT 1" > /dev/null 2>&1; then
+              echo "SQL Server listo (intento $intento)."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::SQL Server no respondió a tiempo."
+          exit 1
+
+      # Pruebas unitarias sin base de datos (los repositorios se sustituyen por dobles). Solo
+      # ConexionSqlPruebas usa GLAMSPACES_SQL_PRUEBAS para abrir una conexión al contenedor.
       - name: Pruebas unitarias con cobertura
+        env:
+          GLAMSPACES_SQL_PRUEBAS: Server=localhost,1433;Database=master;User Id=sa;Password=${{ secrets.MSSQL_SA_PASSWORD }};TrustServerCertificate=True
         run: >
           dotnet test GlamSpaces.sln --no-build
           --collect:"XPlat Code Coverage;Format=opencover"
