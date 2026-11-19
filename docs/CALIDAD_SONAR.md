@@ -161,12 +161,15 @@ Instala el scanner como herramienta global de .NET y agrega su carpeta al `PATH`
           /d:sonar.host.url="https://sonarcloud.io"
           /d:sonar.exclusions="**/bin/**,**/obj/**"
           /d:sonar.cpd.exclusions="Database/**"
+          /d:sonar.coverage.exclusions="scripts/**,Database/**"
 ```
 - `/k`: clave del proyecto en SonarQube Cloud (corregida en el commit `0feb322`).
 - `/o`: organización `4drian-g4rci4`. El frontend tiene su propio proyecto dentro de la misma organización.
 - `/d:sonar.token`: se lee del **secret de GitHub**; nunca está escrito en el repositorio.
 - `/d:sonar.exclusions`: **solo `bin/` y `obj/`**, que son artefactos de compilación. No se excluye ningún archivo de código fuente, no se usa `//NOSONAR` y no se marcó nada como falso positivo.
 - `/d:sonar.cpd.exclusions`: `Database/**` solo para la **duplicación**. Los scripts SQL repiten a propósito los SP completos (`CREATE OR ALTER`) para correr cada sprint por separado en producción; siguen analizándose con todas las reglas.
+- `/d:sonar.coverage.exclusions` (Sprint 9): `scripts/**` y `Database/**` salen **solo de la cobertura**. `scripts/` son las utilerías de PowerShell del workflow de migraciones y `Database/` los scripts SQL que se corren a mano en producción: no son código de la API y no se ejecutan en pruebas unitarias (los SP se prueban en `migraciones.yml` contra un SQL Server real). Siguen analizándose con todas las reglas.
+- **SQL Server en el workflow (Sprint 9):** el job levanta `mssql/server:2022` en un contenedor, igual que `migraciones.yml`, y pasa la cadena en `GLAMSPACES_SQL_PRUEBAS` solo a `ConexionSqlPruebas`, que prueba la conexión por petición y el healthcheck de `Program.cs` abriendo una conexión a `master` (no crea datos). Con esto la cobertura del back queda en **100 %**.
 
 ```yaml
       - name: Compilar
