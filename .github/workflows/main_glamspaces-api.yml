@@ -1,5 +1,15 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
+# Pipeline de despliegue de la API (Azure Web App glamspaces-api).
+#
+#   1. pruebas    → compila la solución y corre TODAS las pruebas (unitarias, API con
+#                   WebApplicationFactory y las de conexión contra un SQL Server en contenedor).
+#                   Si falla una, no se despliega.
+#   2. build      → dotnet publish en Release. Se guarda como artefacto: lo que se probó es lo que se sube.
+#   3. deploy     → sube el paquete a Azure (entorno "produccion" de GitHub). No corre migraciones:
+#                   los cambios de BD en producción se aplican a mano (ver docs/VERSIONAMIENTO_BD.md).
+#   4. verificar  → prueba de humo en producción: /health en Healthy (la API conecta con la BD) y una
+#                   búsqueda de salones de solo lectura responde bien.
+#
+# Corre al hacer push a main (cada release → main) o a mano desde Actions. Un solo deploy a la vez.
 
 name: Build and deploy ASP.Net Core app to Azure Web App - glamspaces-api
 
@@ -9,42 +19,115 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-api-produccion
+  cancel-in-progress: false
+
+env:
+  API: https://glamspaces-api-g8g9bzemfyh7g3en.mexicocentral-01.azurewebsites.net
+
 jobs:
-  build:
+  pruebas:
+    name: 1 · Pruebas
     runs-on: ubuntu-latest
-    permissions:
-      contents: read #This is required for actions/checkout
+
+    # SQL Server en un contenedor, igual que en sonar.yml: solo para las pruebas de la conexión
+    # por petición y del healthcheck (abren una conexión a "master"; no crean datos).
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: ${{ secrets.MSSQL_SA_PASSWORD }}
+        ports:
+          - 1433:1433
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Set up .NET Core
+      - name: Instalar .NET 9
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '9.x'
 
-      - name: Build with dotnet
-        run: dotnet build GlamSpaces.Api --configuration Release
+      - name: Compilar la solución
+        run: dotnet build GlamSpaces.sln --configuration Release
+
+      - name: Esperar a que SQL Server acepte conexiones
+        env:
+          SA_PASSWORD: ${{ secrets.MSSQL_SA_PASSWORD }}
+        run: |
+          for intento in $(seq 1 30); do
+            if docker exec ${{ job.services.sqlserver.id }} /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -b -Q "SELECT 1" > /dev/null 2>&1; then
+              echo "SQL Server listo (intento $intento)."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::SQL Server no respondió a tiempo."
+          exit 1
+
+      - name: Correr todas las pruebas
+        env:
+          GLAMSPACES_SQL_PRUEBAS: Server=localhost,1433;Database=master;User Id=sa;Password=${{ secrets.MSSQL_SA_PASSWORD }};TrustServerCertificate=True
+        run: >
+          dotnet test GlamSpaces.sln --configuration Release --no-build
+          --logger "trx;LogFileName=resultados.trx"
+          --results-directory TestResults
+
+      - name: Guardar los resultados de las pruebas
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: resultados-pruebas
+          path: TestResults/
+          if-no-files-found: ignore
+
+  build:
+    name: 2 · Publicar (Release)
+    needs: pruebas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Instalar .NET 9
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: '9.x'
 
       - name: dotnet publish
-        run: dotnet publish GlamSpaces.Api -c Release -o ${{env.DOTNET_ROOT}}/myapp
+        run: dotnet publish GlamSpaces.Api -c Release -o ${{ runner.temp }}/api
 
-      - name: Upload artifact for deployment job
+      # Un paquete incompleto no se sube: debe traer la API compilada y su configuración.
+      - name: Revisar el paquete
+        run: |
+          for f in GlamSpaces.Api.dll GlamSpaces.Api.runtimeconfig.json appsettings.json; do
+            test -s "${{ runner.temp }}/api/$f" || { echo "::error::Falta $f en el paquete"; exit 1; }
+          done
+
+      - name: Guardar el paquete
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: .net-app
-          path: ${{env.DOTNET_ROOT}}/myapp
+          path: ${{ runner.temp }}/api
+          retention-days: 7
 
   deploy:
-    runs-on: ubuntu-latest
+    name: 3 · Deploy a Azure Web App
     needs: build
-    
+    runs-on: ubuntu-latest
+    environment:
+      name: produccion
+      url: https://glamspaces-api-g8g9bzemfyh7g3en.mexicocentral-01.azurewebsites.net/health
     steps:
-      - name: Download artifact from build job
+      - name: Descargar el paquete probado
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: .net-app
-      
+
       - name: Deploy to Azure Web App
         id: deploy-to-webapp
         uses: azure/webapps-deploy@02a81bead70021f5284939794bcec79c271ab383 # v3.0.8
@@ -53,3 +136,30 @@ jobs:
           slot-name: 'Production'
           package: .
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_93134F78208B48A697BBA56A5B5B4BDE }}
+
+  verificar:
+    name: 4 · Prueba de humo en producción
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      # Solo lecturas: no escribe nada en producción. La app tarda en reiniciar tras el deploy,
+      # así que se reintenta hasta ~3 minutos.
+      - name: /health responde Healthy (la API conecta con la base de datos)
+        run: |
+          for intento in $(seq 1 18); do
+            cuerpo=$(curl -s -m 20 -w ' %{http_code}' "$API/health")
+            echo "Intento $intento · $cuerpo"
+            [ "$cuerpo" = "Healthy 200" ] && exit 0
+            sleep 10
+          done
+          echo "::error::La API no quedó sana después del deploy"
+          exit 1
+
+      - name: La búsqueda de salones responde (solo lectura)
+        run: |
+          respuesta=$(curl -s -m 30 -X POST "$API/api/salones/buscar" -H 'Content-Type: application/json' \
+            -d '{"pagina":1,"tamanoPagina":1}' -w '\n%{http_code}')
+          codigo=$(echo "$respuesta" | tail -1)
+          echo "POST /api/salones/buscar → $codigo"
+          [ "$codigo" = "200" ] && echo "$respuesta" | head -1 | grep -q '"codigo":0' \
+            || { echo "::error::La búsqueda de salones falló"; echo "$respuesta"; exit 1; }
