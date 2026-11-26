@@ -7,3 +7,5 @@ global using GlamSpaces.Domain.Entities;
 global using GlamSpaces.Domain.Interfaces;
 global using GlamSpaces.Infrastructure.Datos;
 global using GlamSpaces.Infrastructure.Seguridad;
+global using Azure;
+global using Azure.Communication.Email;

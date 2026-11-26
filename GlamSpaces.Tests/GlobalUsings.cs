@@ -31,3 +31,6 @@ global using Microsoft.Extensions.DependencyInjection;
 global using NSubstitute;
 global using NSubstitute.ExceptionExtensions;
 global using Xunit;
+global using GlamSpaces.Infrastructure.Correo;
+global using Azure;
+global using Azure.Communication.Email;

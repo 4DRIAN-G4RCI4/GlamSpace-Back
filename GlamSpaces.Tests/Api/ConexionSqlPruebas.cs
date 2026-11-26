@@ -21,6 +21,8 @@ public class ConexionSqlPruebas
             builder.UseSetting("ConnectionStrings:GlamSpacesDb", cadena);
             builder.UseSetting("Almacenamiento:CadenaConexion", "UseDevelopmentStorage=true");
             builder.UseSetting("Almacenamiento:Contenedor", "fotos-pruebas");
+            builder.UseSetting("Correo:CadenaConexion", "endpoint=https://pruebas.communication.azure.com/;accesskey=cHJ1ZWJhcw==");
+            builder.UseSetting("Correo:Remitente", "DoNotReply@pruebas.azurecomm.net");
         }
     }
 
@@ -74,6 +76,8 @@ public class CorsSinConfiguracionPruebas
             builder.UseSetting("ConnectionStrings:GlamSpacesDb", "");
             builder.UseSetting("Almacenamiento:CadenaConexion", "UseDevelopmentStorage=true");
             builder.UseSetting("Almacenamiento:Contenedor", "fotos-pruebas");
+            builder.UseSetting("Correo:CadenaConexion", "endpoint=https://pruebas.communication.azure.com/;accesskey=cHJ1ZWJhcw==");
+            builder.UseSetting("Correo:Remitente", "DoNotReply@pruebas.azurecomm.net");
         }
     }
 

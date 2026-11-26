@@ -4,6 +4,7 @@ global using GlamSpaces.Domain.Dtos;
 global using GlamSpaces.Domain.Interfaces;
 global using GlamSpaces.Domain.Servicios;
 global using GlamSpaces.Infrastructure.Almacenamiento;
+global using GlamSpaces.Infrastructure.Correo;
 global using GlamSpaces.Infrastructure.Repositorios;
 global using Microsoft.AspNetCore.Mvc;
 global using Microsoft.Data.SqlClient;
