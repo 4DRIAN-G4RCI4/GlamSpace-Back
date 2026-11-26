@@ -13,6 +13,12 @@ public static class CodigosError
     public const int NoEsAdministrador = 1004;
     public const int UsuarioNoEncontrado = 1005;
     public const int YaEsAdministrador = 1006; // convertirAAdministrador sobre una cuenta que ya lo es
+    // Sprint 10 · verificación del correo y recuperación de la cuenta con código
+    public const int CorreoSinVerificar = 1007; // login de una cuenta que no ha verificado su correo
+    public const int CodigoIncorrecto = 1008;
+    public const int CodigoVencido = 1009; // también cuando no hay código vigente
+    public const int DemasiadosIntentos = 1010; // 5 intentos fallidos con el mismo código
+    public const int EsperaParaReenviar = 1011; // se pidió otro código hace menos de 60 s
 
     // 2xxx: salones
     public const int SalonNoEncontrado = 2001;

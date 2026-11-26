@@ -74,4 +74,36 @@ public class UsuarioRepositorio : IUsuarioRepositorio
 
         return p.Respuesta(convertido, UsuarioResponse.Desde);
     }
+
+    // ---------- Sprint 10 · verificación del correo y recuperación de la cuenta ----------
+
+    // null si no hay cuenta con ese correo. Nunca regresa la contraseña.
+    public async Task<UsuarioResponse?> ObtenerPorCorreo(string correo)
+    {
+        var usuario = await _db.QueryFirstOrDefaultAsync<Usuario>(
+            "sp_Usuario_ObtenerPorCorreo", StoredProcedure.Parametros(new { Correo = correo }), commandType: CommandType.StoredProcedure);
+        return usuario is null ? null : UsuarioResponse.Desde(usuario);
+    }
+
+    public async Task<RespuestaApi<UsuarioResponse>> MarcarCorreoVerificado(int id)
+    {
+        var p = StoredProcedure.Parametros(new { Id = id });
+        var usuario = await _db.QueryFirstOrDefaultAsync<Usuario>(
+            "sp_Usuario_MarcarCorreoVerificado", p, commandType: CommandType.StoredProcedure);
+
+        return p.Respuesta(usuario, UsuarioResponse.Desde);
+    }
+
+    // La nueva contraseña se valida y se hashea aquí, igual que en el registro.
+    public async Task<RespuestaApi<object?>> CambiarContrasena(int id, string nuevaContrasena)
+    {
+        if (string.IsNullOrEmpty(nuevaContrasena) || nuevaContrasena.Length < LongitudMinPassword)
+            return RespuestaApi<object?>.Error(CodigosError.DatosInvalidos,
+                $"La contraseña debe tener al menos {LongitudMinPassword} caracteres.");
+
+        var p = StoredProcedure.Parametros(new { Id = id, PasswordHash = PasswordHasher.Hashear(nuevaContrasena) });
+        await _db.ExecuteAsync("sp_Usuario_CambiarContrasena", p, commandType: CommandType.StoredProcedure);
+
+        return p.RespuestaSinDatos();
+    }
 }

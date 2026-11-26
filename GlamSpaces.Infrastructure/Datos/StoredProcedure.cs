@@ -42,4 +42,10 @@ internal static class StoredProcedure
         => p.Codigo() == CodigosError.Exito
             ? RespuestaApi<TDto>.Ok(mapear(entidad!), p.Mensaje())
             : RespuestaApi<TDto>.Error(p.Codigo(), p.Mensaje());
+
+    // Para los SP que no regresan datos: éxito sin datos o el error del SP.
+    public static RespuestaApi<object?> RespuestaSinDatos(this DynamicParameters p)
+        => p.Codigo() == CodigosError.Exito
+            ? RespuestaApi<object?>.Ok(null, p.Mensaje())
+            : RespuestaApi<object?>.Error(p.Codigo(), p.Mensaje());
 }
