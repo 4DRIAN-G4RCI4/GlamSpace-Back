@@ -12,6 +12,8 @@ public sealed class FabricaApi : WebApplicationFactory<Program>
     public ISolicitudRepositorio Solicitudes { get; } = Substitute.For<ISolicitudRepositorio>();
     public IFotoSalonRepositorio Fotos { get; } = Substitute.For<IFotoSalonRepositorio>();
     public IAlmacenamientoFotos Almacenamiento { get; } = Substitute.For<IAlmacenamientoFotos>();
+    public ICodigoCorreoRepositorio Codigos { get; } = Substitute.For<ICodigoCorreoRepositorio>();
+    public IEnvioCorreo Correo { get; } = Substitute.For<IEnvioCorreo>();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -21,6 +23,8 @@ public sealed class FabricaApi : WebApplicationFactory<Program>
         // Valores de mentira para que pase la validación al arrancar; el almacenamiento real se reemplaza abajo.
         builder.UseSetting("Almacenamiento:CadenaConexion", "UseDevelopmentStorage=true");
         builder.UseSetting("Almacenamiento:Contenedor", "fotos-pruebas");
+        builder.UseSetting("Correo:CadenaConexion", "endpoint=https://pruebas.communication.azure.com/;accesskey=cHJ1ZWJhcw==");
+        builder.UseSetting("Correo:Remitente", "DoNotReply@pruebas.azurecomm.net");
         builder.ConfigureTestServices(servicios =>
         {
             servicios.AddScoped(_ => Usuarios);
@@ -29,6 +33,8 @@ public sealed class FabricaApi : WebApplicationFactory<Program>
             servicios.AddScoped(_ => Solicitudes);
             servicios.AddScoped(_ => Fotos);
             servicios.AddSingleton(_ => Almacenamiento);
+            servicios.AddScoped(_ => Codigos);
+            servicios.AddSingleton(_ => Correo);
         });
     }
 }

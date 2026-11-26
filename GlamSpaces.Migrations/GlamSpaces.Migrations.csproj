@@ -32,6 +32,8 @@
     <EmbeddedResource Include="..\Database\18_FotoSolicitudesYConversionAdmin.sql" LogicalName="Database.18_FotoSolicitudesYConversionAdmin.sql" />
     <!-- 014 (TRY/CATCH y bitácora de errores) ejecuta el 19; su Down() restaura cada SP de su script anterior. -->
     <EmbeddedResource Include="..\Database\19_TryCatchBitacora.sql" LogicalName="Database.19_TryCatchBitacora.sql" />
+    <!-- 015 (verificacion del correo) ejecuta el 20; su Down() restaura 3 SP de usuario del 19. -->
+    <EmbeddedResource Include="..\Database\20_VerificacionCorreo.sql" LogicalName="Database.20_VerificacionCorreo.sql" />
   </ItemGroup>
 
   <!-- Permite que GlamSpaces.Tests pruebe las clases internal de este proyecto. -->

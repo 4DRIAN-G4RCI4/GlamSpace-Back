@@ -9,6 +9,22 @@ public interface IUsuarioRepositorio
     Task<RespuestaApi<UsuarioResponse>> Login(LoginRequest request);
     Task<RespuestaApi<UsuarioResponse>> Obtener(int id);
     Task<RespuestaApi<UsuarioResponse>> ConvertirAAdministrador(ConvertirAdministradorRequest request);
+
+    // Sprint 10 · verificación del correo y recuperación de la cuenta
+    Task<UsuarioResponse?> ObtenerPorCorreo(string correo); // null si no existe (sin contraseña)
+    Task<RespuestaApi<UsuarioResponse>> MarcarCorreoVerificado(int id);
+    Task<RespuestaApi<object?>> CambiarContrasena(int id, string nuevaContrasena); // valida y hashea aquí
+}
+
+// Sprint 10 · códigos de 6 dígitos que se mandan por correo. El código se hashea aquí (PBKDF2):
+// nunca se guarda en claro. Vencen a los 15 minutos y aguantan 5 intentos.
+public interface ICodigoCorreoRepositorio
+{
+    // 0 guardado · 1011 se pidió otro hace menos de 60 s.
+    Task<RespuestaApi<object?>> Guardar(int usuarioId, string proposito, string codigo);
+
+    // Compara con el último código vigente y registra el intento.
+    Task<ResultadoCodigo> Validar(int usuarioId, string proposito, string codigo);
 }
 
 public interface ISalonRepositorio
