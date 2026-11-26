@@ -126,6 +126,8 @@ scripts/migraciones.ps1            listar, subir, rollback, reaplicar, respaldar
 | 010 | `202611121000` | `M010_FotosSalonHU07` | **HU-07 (fotos), Sprint 7**: subida real de imágenes. La tabla `FotosSalon` no cambia. | Ejecuta `Database/12_FotosSalonHU07.sql` incrustado: `sp_FotoSalon_Agregar` y `sp_FotoSalon_Eliminar` (`CREATE OR ALTER`). Evidencias `32` y `33`. | Borra los 2 SP. |
 | 011 | `202611131000` | `M011_FotosPreviewBuscar` | **HU-07 (fotos), Sprint 7**: `fotosPreview` en la búsqueda. La tabla `FotosSalon` no cambia. | Ejecuta `Database/13_FotosPreviewBuscar.sql` incrustado: `sp_Salon_Buscar` (`CREATE OR ALTER`) guarda la página en `#Pagina` y regresa un tercer result set con hasta 5 fotos por salón. | Restaura `sp_Salon_Buscar` de `02_StoredProcedures.sql` (2 result sets). |
 | 012 | `202611141000` | `M012_MisSalonesAdmin` | **Mis salones (mejoras de HU-07 / HU-08), Sprint 7**: miniatura y número de fotos en el listado del admin, y eliminar salón. No cambia tablas. | Ejecuta `Database/14_MisSalonesAdmin.sql` incrustado: `sp_Salon_Listar` (`CREATE OR ALTER`) agrega `FotoPrincipal` y `TotalFotos`; crea `sp_Salon_Eliminar`. | Borra `sp_Salon_Eliminar` y restaura `sp_Salon_Listar` de `02_StoredProcedures.sql`. |
+| 013 | `202611151000` | `M013_FotoSolicitudesYConversionAdmin` | **Sprint 7**: foto del salón en las solicitudes y convertir una cuenta de cliente en administrador. No cambia tablas. | Ejecuta `Database/18_FotoSolicitudesYConversionAdmin.sql` incrustado: `FotoPrincipal` en `sp_Solicitud_ListarPorCliente` y `sp_Solicitud_ListarPorSalon`; crea `sp_Usuario_ObtenerCredenciales` y `sp_Usuario_ConvertirAAdministrador`. | Borra los 2 SP nuevos y restaura los listados de `08` y `11`. |
+| 014 | `202611251000` | `M014_TryCatchBitacora` | **Sprint 10 (pedido del profe)**: TRY/CATCH en los 22 stored procedures y bitácora de errores. Ver [sección 16](#16-sprint-10--trycatch-en-los-stored-procedures-y-bitácora-de-errores). | Ejecuta `Database/19_TryCatchBitacora.sql` incrustado: tabla `BitacoraErrores` (si no existe) con índice por fecha, `sp_Bitacora_RegistrarError` y los 22 SP con su cuerpo dentro de `BEGIN TRY … END TRY` y un `CATCH` que hace `ROLLBACK`, registra y relanza. Evidencia `38`. | Restaura cada SP desde el script de su versión anterior (`M014_TryCatchBitacora.VersionAnterior`) y borra `sp_Bitacora_RegistrarError` y la tabla. |
 
 **Detalle técnico de la línea base:** FluentMigrator no acepta el separador `GO` dentro de un mismo
 `Execute.Sql`, y los scripts de `Database/` lo usan entre cada SP. `ScriptsSql.Lotes()` divide cada
@@ -2943,3 +2945,74 @@ Opcionales:
 > 📸 **CAPTURA AQUÍ:** el proyecto `GlamSpaces.Migrations` en el Explorador de soluciones de Visual Studio.
 
 > 📸 **CAPTURA AQUÍ:** la tabla `VersionInfo` abierta en SSMS o en el Explorador de objetos de SQL Server.
+
+## 16. Sprint 10 — TRY/CATCH en los stored procedures y bitácora de errores
+
+Pedido del profe: todos los stored procedures manejan sus errores con TRY/CATCH y, si algo falla,
+el error queda guardado. Script `Database/19_TryCatchBitacora.sql`, migración `M014_TryCatchBitacora`.
+
+**Tabla `BitacoraErrores`**
+
+| Columna | Tipo | Qué guarda |
+|---|---|---|
+| `Id` | `BIGINT IDENTITY` PK | Número del registro |
+| `Fecha` | `DATETIME2(3)` `DEFAULT SYSUTCDATETIME()` | Cuándo pasó (UTC) |
+| `Procedimiento` | `NVARCHAR(128)` | El SP que falló |
+| `NumeroError` | `INT` | `ERROR_NUMBER()` (2601 llave duplicada, 547 llave foránea, 8134 división entre cero, …) |
+| `Severidad`, `Estado`, `Linea` | `INT` | `ERROR_SEVERITY()`, `ERROR_STATE()`, `ERROR_LINE()` |
+| `Mensaje` | `NVARCHAR(4000)` | `ERROR_MESSAGE()` |
+| `Usuario` | `NVARCHAR(128)` `DEFAULT SUSER_SNAME()` | El usuario de SQL con el que corrió |
+
+Índice `IX_BitacoraErrores_Fecha (Fecha DESC)` para ver primero lo más reciente.
+
+**Patrón en cada SP** (los 22 que usa la API):
+
+```sql
+CREATE OR ALTER PROCEDURE sp_Ejemplo ...
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        -- cuerpo de siempre: validaciones que responden @Codigo / @Mensaje y el trabajo
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;                                   -- 1) deshacer
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Ejemplo';  -- 2) guardar el error
+        THROW;                                                         -- 3) relanzarlo
+    END CATCH
+END
+```
+
+- **Primero el `ROLLBACK`, después el registro**: si se registrara dentro de la transacción, el
+  `ROLLBACK` también borraría el registro.
+- **`THROW` al final**: la API sigue recibiendo la excepción y responde `5000 · ErrorInterno` igual que antes.
+- **Los errores de negocio no se registran**: 4003, 2002, 4002… no son excepciones; siguen saliendo por
+  `@Codigo` y `@Mensaje`.
+- Los SP que ya tenían un TRY/CATCH interno (`sp_Solicitud_Crear`, `sp_Solicitud_CambiarEstado`,
+  `sp_Salon_Eliminar`) lo conservan: el interno sigue convirtiendo la llave duplicada en 4004/4002 y el
+  externo registra lo que ese relanza. El CATCH interno de `sp_Salon_Eliminar` responde 5000 sin relanzar,
+  así que registra ahí mismo.
+- `sp_Bitacora_RegistrarError` tiene su propio TRY/CATCH: si no puede guardar el registro, no tapa el
+  error original.
+
+**Consultar la bitácora**
+
+```sql
+SELECT TOP 50 Fecha, Procedimiento, NumeroError, Linea, Mensaje
+FROM dbo.BitacoraErrores
+ORDER BY Fecha DESC;
+```
+
+**Pruebas**
+
+- `MigracionesPruebas`: la 014 ejecuta el script 19; los 22 SP tienen `BEGIN TRY`, `ROLLBACK`, el registro
+  con su nombre y `THROW`; `Down` restaura cada SP de su script anterior y borra la bitácora.
+- Workflow `Migraciones BD`: corre el 19 dos veces (idempotente) y **después** `10_PruebasHU17.sql`, así los
+  16 criterios de la HU-17 se prueban con los SP ya envueltos. El rollback verifica que no queda ningún
+  SP que llame a la bitácora.
+- Evidencia `docs/evidencias/38_trycatch_bitacora_local.txt` (LocalDB): subir → 22 de 22 con TRY/CATCH →
+  la bitácora guarda un error 8134 → rollback (0 de 22, sin tabla) → reaplicar (22 de 22).
+
+**Producción**: se corre a mano `Database/19_TryCatchBitacora.sql` en Azure (`glamspaces-db`). Es
+idempotente y no cambia datos; la API no necesita cambios.

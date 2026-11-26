@@ -1,0 +1,3566 @@
+Evidencia M014 · TRY/CATCH en los 22 stored procedures y bitácora de errores (Sprint 10)
+LocalDB (GlamSpacesMigraciones), 2026-11-25 23:59. Salida real de scripts/migraciones.ps1:
+listar → subir → verificar → registrar un error → rollback → verificar → reaplicar → verificar.
+
+===== 1. listar (antes) =====
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+202610291000: M005_CrearSolicitudes
+202610291100: M006_AgregarTelefonoContactoSolicitudes
+202610291200: M007_ProcedimientosSolicitudes
+202611051000: M008_EstadoSolicitudesHU17
+202611051100: M009_SolicitudesAdminHU18
+202611121000: M010_FotosSalonHU07
+202611131000: M011_FotosPreviewBuscar
+202611141000: M012_MisSalonesAdmin
+⌘ 202611151000: M013_FotoSolicitudesYConversionAdmin (current)
+202611251000: M014_TryCatchBitacora (not applied)
+Task completed.
+===== 2. subir =====
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202611251000: M014_TryCatchBitacora migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement /* =========================================================================
+   GlamSpaces — TRY/CATCH en todos los stored procedures y bitácora de errores (Sprint 10)
+   Correr DESPUÉS de 18_FotoSolicitudesYConversionAdmin.sql. Idempotente: la tabla y su índice
+   solo se crean si no existen y los SP van con CREATE OR ALTER. La migración M014 ejecuta este
+   mismo script.
+
+   1) Tabla BitacoraErrores: cada error de SQL que ocurre dentro de un stored procedure
+      (Fecha UTC, Procedimiento, NumeroError, Severidad, Estado, Linea, Mensaje, Usuario).
+   2) sp_Bitacora_RegistrarError: guarda el error en curso (ERROR_NUMBER(), ERROR_MESSAGE(), …).
+      Si guardarlo falla, no tapa el error original.
+   3) Los 22 SP de la API con el mismo patrón:
+          BEGIN TRY  …cuerpo de siempre…  END TRY
+          BEGIN CATCH
+              IF @@TRANCOUNT > 0 ROLLBACK;            -- primero deshacer, para que el registro no se pierda
+              EXEC dbo.sp_Bitacora_RegistrarError …;  -- guardar el error
+              THROW;                                  -- y relanzarlo: la API sigue respondiendo 5000
+          END CATCH
+      Los errores de negocio (4003, 2002, …) NO son excepciones: siguen saliendo por @Codigo y
+      @Mensaje y no se registran. Los SP que ya tenían TRY/CATCH (crear y atender solicitudes,
+      eliminar salón) conservan el suyo; el de afuera solo registra lo que ese relanza.
+      El cuerpo de cada SP es exactamente el de su script anterior (ver la lista al final).
+   ========================================================================= */
+
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+ExecuteSqlStatement IF OBJECT_ID(N'dbo.BitacoraErrores', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.BitacoraErrores (
+        Id            BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_BitacoraErrores PRIMARY KEY,
+        Fecha         DATETIME2(3)   NOT NULL CONSTRAINT DF_BitacoraErrores_Fecha DEFAULT SYSUTCDATETIME(),
+        Procedimiento NVARCHAR(128)  NULL,
+        NumeroError   INT            NOT NULL,
+        Severidad     INT            NULL,
+        Estado        INT            NULL,
+        Linea         INT            NULL,
+        Mensaje       NVARCHAR(4000) NOT NULL,
+        Usuario       NVARCHAR(128)  NOT NULL CONSTRAINT DF_BitacoraErrores_Usuario DEFAULT SUSER_SNAME()
+    );
+END
+ExecuteSqlStatement IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_BitacoraErrores_Fecha' AND object_id = OBJECT_ID(N'dbo.BitacoraErrores'))
+    CREATE INDEX IX_BitacoraErrores_Fecha ON dbo.BitacoraErrores (Fecha DESC);
+ExecuteSqlStatement -- Guarda el error que se está atendiendo. Se llama desde el CATCH de cada SP, después del ROLLBACK.
+-- @Procedimiento es el nombre del SP que falló (ERROR_PROCEDURE() también lo da, pero con un error
+-- de compilación diferida puede venir vacío).
+CREATE OR ALTER PROCEDURE dbo.sp_Bitacora_RegistrarError
+    @Procedimiento NVARCHAR(128) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        INSERT INTO dbo.BitacoraErrores (Procedimiento, NumeroError, Severidad, Estado, Linea, Mensaje)
+        VALUES (
+            COALESCE(@Procedimiento, ERROR_PROCEDURE()),
+            ISNULL(ERROR_NUMBER(), 0),
+            ERROR_SEVERITY(),
+            ERROR_STATE(),
+            ERROR_LINE(),
+            ISNULL(ERROR_MESSAGE(), N'(sin mensaje)'));
+    END TRY
+    BEGIN CATCH
+        -- Si no se pudo guardar el registro, el SP que llamó igual relanza su error original.
+        RETURN;
+    END CATCH
+END
+ExecuteSqlStatement -- Registra la URL de una foto ya subida al almacenamiento. Solo el dueño, máximo 8 fotos por salón.
+-- El salón se bloquea (UPDLOCK) mientras se cuenta: dos subidas al mismo tiempo no pasan de 8.
+-- Con error no inserta nada y el API borra el archivo que ya había subido (sin huérfanos).
+CREATE OR ALTER PROCEDURE sp_FotoSalon_Agregar
+    @SalonId INT,
+    @AdminId INT,
+    @Url     NVARCHAR(500),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET XACT_ABORT ON;
+
+        DECLARE @DuenoId INT, @Id INT;
+
+        BEGIN TRANSACTION;
+
+        SELECT @DuenoId = AdminId FROM Salones WITH (UPDLOCK, HOLDLOCK) WHERE Id = @SalonId;
+
+        IF @DuenoId IS NULL
+        BEGIN ROLLBACK; SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN ROLLBACK; SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        IF (SELECT COUNT(*) FROM FotosSalon WHERE SalonId = @SalonId) >= 8
+        BEGIN ROLLBACK; SELECT @Codigo = 2008, @Mensaje = N'El salón ya tiene 8 fotos. Elimina una para subir otra.'; RETURN; END
+
+        INSERT INTO FotosSalon (SalonId, Url) VALUES (@SalonId, @Url);
+        SET @Id = SCOPE_IDENTITY();
+
+        COMMIT;
+
+        SELECT @Codigo = 0, @Mensaje = N'Foto subida correctamente.';
+        SELECT Id, SalonId, Url FROM FotosSalon WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_FotoSalon_Agregar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Elimina una foto del salón y regresa su URL para que el API borre el archivo.
+-- @SoloValidar = 1: hace las mismas validaciones y regresa la foto SIN borrarla. El API lo usa
+-- para borrar primero el archivo: si el almacenamiento falla, el registro sigue y se puede reintentar.
+CREATE OR ALTER PROCEDURE sp_FotoSalon_Eliminar
+    @SalonId     INT,
+    @FotoId      INT,
+    @AdminId     INT,
+    @SoloValidar BIT = 0,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @SalonId);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM FotosSalon WHERE Id = @FotoId AND SalonId = @SalonId)
+        BEGIN SELECT @Codigo = 2009, @Mensaje = N'La foto no existe o no es de este salón.'; RETURN; END
+
+        SELECT Id, SalonId, Url FROM FotosSalon WHERE Id = @FotoId;
+
+        IF ISNULL(@SoloValidar, 0) = 0
+        BEGIN
+            DELETE FROM FotosSalon WHERE Id = @FotoId;
+            SELECT @Codigo = 0, @Mensaje = N'Foto eliminada correctamente.';
+        END
+        ELSE
+            SELECT @Codigo = 0, @Mensaje = N'Foto encontrada.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_FotoSalon_Eliminar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Descripcion NULL la borra.
+CREATE OR ALTER PROCEDURE sp_Paquete_Actualizar
+    @Id            INT,
+    @AdminId       INT,
+    @NombrePaquete NVARCHAR(150),
+    @Descripcion   NVARCHAR(500) = NULL,
+    @Precio        DECIMAL(10,2),
+    @Codigo        INT OUTPUT,
+    @Mensaje       NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @DuenoId INT = (
+            SELECT s.AdminId FROM Paquetes p JOIN Salones s ON s.Id = p.SalonId WHERE p.Id = @Id);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        SET @NombrePaquete = TRIM(@NombrePaquete);
+        SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+        IF ISNULL(@NombrePaquete, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del paquete es obligatorio.'; RETURN; END
+
+        IF ISNULL(@Precio, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El precio debe ser mayor a 0.'; RETURN; END
+
+        UPDATE Paquetes
+        SET NombrePaquete = @NombrePaquete, Descripcion = @Descripcion, Precio = @Precio
+        WHERE Id = @Id;
+
+        SELECT @Codigo = 0, @Mensaje = N'Paquete actualizado correctamente.';
+
+        SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+        FROM Paquetes WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Paquete_Actualizar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- =========================================================================
+-- PAQUETES
+-- =========================================================================
+CREATE OR ALTER PROCEDURE sp_Paquete_Crear
+    @SalonId       INT,
+    @AdminId       INT,
+    @NombrePaquete NVARCHAR(150),
+    @Descripcion   NVARCHAR(500) = NULL,
+    @Precio        DECIMAL(10,2),
+    @Codigo        INT OUTPUT,
+    @Mensaje       NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @SalonId);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        SET @NombrePaquete = TRIM(@NombrePaquete);
+        SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+        IF ISNULL(@NombrePaquete, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del paquete es obligatorio.'; RETURN; END
+
+        IF ISNULL(@Precio, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El precio debe ser mayor a 0.'; RETURN; END
+
+        INSERT INTO Paquetes (SalonId, NombrePaquete, Descripcion, Precio)
+        VALUES (@SalonId, @NombrePaquete, @Descripcion, @Precio);
+
+        SELECT @Codigo = 0, @Mensaje = N'Paquete agregado correctamente.';
+
+        SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+        FROM Paquetes WHERE Id = SCOPE_IDENTITY();
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Paquete_Crear';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- No deja un salón publicado sin paquetes.
+CREATE OR ALTER PROCEDURE sp_Paquete_Eliminar
+    @Id      INT,
+    @AdminId INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @SalonId INT, @DuenoId INT, @Estado NVARCHAR(20);
+        SELECT @SalonId = s.Id, @DuenoId = s.AdminId, @Estado = s.Estado
+        FROM Paquetes p JOIN Salones s ON s.Id = p.SalonId
+        WHERE p.Id = @Id;
+
+        IF @SalonId IS NULL
+        BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        IF @Estado = 'publicado' AND (SELECT COUNT(*) FROM Paquetes WHERE SalonId = @SalonId) <= 1
+        BEGIN SELECT @Codigo = 3002, @Mensaje = N'Un salón publicado debe tener al menos un paquete. Despublícalo antes de borrar el último.'; RETURN; END
+
+        DELETE FROM Paquetes WHERE Id = @Id;
+
+        SELECT @Codigo = 0, @Mensaje = N'Paquete eliminado correctamente.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Paquete_Eliminar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Si @Estado viene NULL se conserva el actual. Descripcion NULL la borra.
+CREATE OR ALTER PROCEDURE sp_Salon_Actualizar
+    @Id          INT,
+    @AdminId     INT,
+    @Nombre      NVARCHAR(150),
+    @Zona        NVARCHAR(200),
+    @Capacidad   INT,
+    @Descripcion NVARCHAR(1000) = NULL,
+    @Estado      NVARCHAR(20) = NULL,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @DuenoId INT, @EstadoActual NVARCHAR(20);
+        SELECT @DuenoId = AdminId, @EstadoActual = Estado FROM Salones WHERE Id = @Id;
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        SET @Nombre = TRIM(@Nombre);
+        SET @Zona = TRIM(@Zona);
+        SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+        SET @Estado = ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), @EstadoActual);
+
+        IF ISNULL(@Nombre, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del salón es obligatorio.'; RETURN; END
+
+        IF ISNULL(@Zona, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La zona es obligatoria.'; RETURN; END
+
+        IF ISNULL(@Capacidad, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La capacidad debe ser mayor a 0.'; RETURN; END
+
+        IF @Estado NOT IN ('publicado', 'no_publicado')
+        BEGIN SELECT @Codigo = 2004, @Mensaje = N'El estado debe ser "publicado" o "no_publicado".'; RETURN; END
+
+        IF @Estado = 'publicado' AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE SalonId = @Id)
+        BEGIN SELECT @Codigo = 2003, @Mensaje = N'Para publicar el salón se requiere al menos un paquete.'; RETURN; END
+
+        UPDATE Salones
+        SET Nombre = @Nombre, Zona = @Zona, Capacidad = @Capacidad,
+            Descripcion = @Descripcion, Estado = @Estado
+        WHERE Id = @Id;
+
+        SELECT @Codigo = 0, @Mensaje = N'Salón actualizado correctamente.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Actualizar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Búsqueda pública: solo salones publicados. Todos los filtros son opcionales y combinables;
+-- NULL, vacío o <= 0 significa "sin filtro". Nunca regresa error: sin resultados es éxito con lista vacía.
+-- Zona: coincidencia parcial sin importar mayúsculas ni acentos ("rio" encuentra "Tepeji del Río").
+-- PrecioMaximo: el salón entra si su paquete más barato (PrecioDesde) cuesta eso o menos.
+-- Result sets: 1) datos del paginado, 2) salones de la página, 3) hasta 5 fotos por salón de la página
+-- (SalonId, Url) en orden de Id de foto.
+CREATE OR ALTER PROCEDURE sp_Salon_Buscar
+    @Zona            NVARCHAR(200) = NULL,
+    @CapacidadMinima INT = NULL,
+    @PrecioMaximo    DECIMAL(10,2) = NULL,
+    @Pagina          INT = 1,
+    @TamanoPagina    INT = 10,
+    @Codigo          INT OUTPUT,
+    @Mensaje         NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+        SET @TamanoPagina = CASE
+            WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+            WHEN @TamanoPagina > 100 THEN 100
+            ELSE @TamanoPagina END;
+        SET @Zona = NULLIF(TRIM(@Zona), '');
+        IF @CapacidadMinima <= 0 SET @CapacidadMinima = NULL;
+        IF @PrecioMaximo <= 0 SET @PrecioMaximo = NULL;
+
+        SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, p.PrecioDesde,
+               (SELECT TOP 1 f.Url FROM FotosSalon f WHERE f.SalonId = s.Id ORDER BY f.Id) AS FotoPrincipal
+        INTO #Resultados
+        FROM Salones s
+        CROSS APPLY (SELECT MIN(Precio) AS PrecioDesde FROM Paquetes WHERE SalonId = s.Id) p
+        WHERE s.Estado = 'publicado'
+          AND p.PrecioDesde IS NOT NULL
+          AND (@Zona IS NULL
+               OR s.Zona COLLATE Latin1_General_CI_AI LIKE N'%' + @Zona + N'%' COLLATE Latin1_General_CI_AI)
+          AND (@CapacidadMinima IS NULL OR s.Capacidad >= @CapacidadMinima)
+          AND (@PrecioMaximo IS NULL OR p.PrecioDesde <= @PrecioMaximo)
+        -- Con filtros opcionales, RECOMPILE arma el plan con los valores reales de cada búsqueda
+        -- para que SQL Server sí use los índices de 03_Indices.sql.
+        OPTION (RECOMPILE);
+
+        DECLARE @Total INT = (SELECT COUNT(*) FROM #Resultados);
+
+        -- La página se guarda una vez para usarla en el result set 2 y en el 3 con el mismo orden.
+        SELECT Id, Nombre, Zona, Capacidad, PrecioDesde, FotoPrincipal
+        INTO #Pagina
+        FROM #Resultados
+        ORDER BY PrecioDesde, Id
+        OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+        FETCH NEXT @TamanoPagina ROWS ONLY;
+
+        SELECT @Codigo = 0,
+               @Mensaje = CASE WHEN @Total = 0 THEN N'No se encontraron salones con esos filtros.'
+                               ELSE N'Consulta exitosa.' END;
+
+        SELECT @Total AS TotalRegistros,
+               (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+               @Pagina AS Pagina,
+               @TamanoPagina AS TamanoPagina;
+
+        SELECT Id, Nombre, Zona, Capacidad, PrecioDesde, FotoPrincipal
+        FROM #Pagina
+        ORDER BY PrecioDesde, Id;
+
+        SELECT x.SalonId, x.Url
+        FROM (SELECT f.SalonId, f.Url,
+                     ROW_NUMBER() OVER (PARTITION BY f.SalonId ORDER BY f.Id) AS Orden
+              FROM FotosSalon f
+              INNER JOIN #Pagina pg ON pg.Id = f.SalonId) x
+        WHERE x.Orden <= 5
+        ORDER BY x.SalonId, x.Orden;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Buscar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- =========================================================================
+-- SALONES
+-- =========================================================================
+CREATE OR ALTER PROCEDURE sp_Salon_Crear
+    @AdminId     INT,
+    @Nombre      NVARCHAR(150),
+    @Zona        NVARCHAR(200),
+    @Capacidad   INT,
+    @Descripcion NVARCHAR(1000) = NULL,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Nombre = TRIM(@Nombre);
+        SET @Zona = TRIM(@Zona);
+        SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+        IF ISNULL(@Nombre, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del salón es obligatorio.'; RETURN; END
+
+        IF ISNULL(@Zona, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La zona es obligatoria.'; RETURN; END
+
+        IF ISNULL(@Capacidad, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La capacidad debe ser mayor a 0.'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+        BEGIN SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.'; RETURN; END
+
+        -- Siempre nace "no_publicado": todavía no tiene paquetes.
+        INSERT INTO Salones (AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion)
+        VALUES (@AdminId, @Nombre, @Zona, @Capacidad, @Descripcion, 'no_publicado', GETDATE());
+
+        SELECT @Codigo = 0, @Mensaje = N'Salón creado correctamente.';
+
+        SELECT Id, AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion
+        FROM Salones WHERE Id = SCOPE_IDENTITY();
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Crear';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 2) Disponibilidad: reservaciones confirmadas + solicitudes confirmadas
+-- -------------------------------------------------------------------------
+-- Regresa las fechas ocupadas del mes. Mes fuera de 1–12 o año fuera de 2000–2100 → 1001;
+-- salón inexistente → 2001; mes sin ocupadas = éxito con lista vacía.
+CREATE OR ALTER PROCEDURE sp_Salon_Disponibilidad
+    @SalonId INT,
+    @Anio    INT,
+    @Mes     INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        IF ISNULL(@Mes, 0) NOT BETWEEN 1 AND 12 OR ISNULL(@Anio, 0) NOT BETWEEN 2000 AND 2100
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'Mes o año inválido.'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        DECLARE @Inicio DATE = DATEFROMPARTS(@Anio, @Mes, 1);
+        DECLARE @Fin DATE = DATEADD(MONTH, 1, @Inicio);
+
+        -- UNION quita repetidos: una fecha aparece una vez aunque esté en las dos tablas.
+        SELECT FechaEvento
+        INTO #Fechas
+        FROM (
+            SELECT FechaEvento FROM Reservaciones
+            WHERE SalonId = @SalonId AND Estado = 'confirmada' AND FechaEvento >= @Inicio AND FechaEvento < @Fin
+            UNION
+            SELECT FechaEvento FROM Solicitudes
+            WHERE SalonId = @SalonId AND Estado = 'confirmada' AND FechaEvento >= @Inicio AND FechaEvento < @Fin
+        ) ocupadas;
+
+        SELECT @Codigo = 0,
+               @Mensaje = CASE WHEN NOT EXISTS (SELECT 1 FROM #Fechas)
+                               THEN N'El salón no tiene fechas ocupadas en ese mes.'
+                               ELSE N'Consulta exitosa.' END;
+
+        SELECT FechaEvento FROM #Fechas ORDER BY FechaEvento;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Disponibilidad';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Elimina el salón con sus fotos (registros), paquetes, favoritas, solicitudes rechazadas y
+-- reservaciones no confirmadas. Solo el dueño. No se elimina si hay algo por atender o ya
+-- confirmado: primero hay que resolverlo.
+CREATE OR ALTER PROCEDURE sp_Salon_Eliminar
+    @Id      INT,
+    @AdminId INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET XACT_ABORT ON;
+
+        DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @Id);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> @AdminId
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño de este salón.'; RETURN; END
+
+        BEGIN TRY
+            BEGIN TRAN;
+
+            -- UPDLOCK + HOLDLOCK: si al mismo tiempo llega una solicitud o se confirma una, una
+            -- operación espera a la otra (no se borra un salón con algo recién confirmado).
+            IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                       WHERE SalonId = @Id AND Estado IN ('pendiente', 'confirmada'))
+               OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                          WHERE SalonId = @Id AND Estado = 'confirmada')
+            BEGIN
+                ROLLBACK;
+                SELECT @Codigo = 2010, @Mensaje = N'Tiene solicitudes pendientes o confirmadas; resuélvelas antes de eliminar el salón.';
+                RETURN;
+            END
+
+            DELETE FROM Solicitudes        WHERE SalonId = @Id; -- solo quedan rechazadas
+            DELETE FROM Reservaciones      WHERE SalonId = @Id; -- solo quedan pendientes o canceladas
+            DELETE FROM FotosSalon         WHERE SalonId = @Id;
+            DELETE FROM Paquetes           WHERE SalonId = @Id;
+            DELETE FROM BusquedasFavoritas WHERE SalonId = @Id;
+            DELETE FROM Salones            WHERE Id = @Id;
+
+            COMMIT;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK;
+            -- Este CATCH responde 5000 sin relanzar: el error se registra aquí mismo.
+            EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Eliminar';
+            SELECT @Codigo = 5000, @Mensaje = N'No se pudo eliminar el salón. Intenta de nuevo más tarde.';
+            RETURN;
+        END CATCH
+
+        SELECT @Codigo = 0, @Mensaje = N'Salón eliminado correctamente.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Eliminar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Paginado: primer result set = datos del paginado, segundo = registros de la página.
+-- @AdminId NULL lista todos. @Pagina < 1 se toma como 1; @TamanoPagina va de 1 a 100.
+-- FotoPrincipal = la primera foto del salón (por Id, igual que la búsqueda); NULL si no tiene.
+CREATE OR ALTER PROCEDURE sp_Salon_Listar
+    @AdminId      INT = NULL,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+        SET @TamanoPagina = CASE
+            WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+            WHEN @TamanoPagina > 100 THEN 100
+            ELSE @TamanoPagina END;
+
+        DECLARE @Total INT = (SELECT COUNT(*) FROM Salones WHERE @AdminId IS NULL OR AdminId = @AdminId);
+
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT @Total AS TotalRegistros,
+               (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+               @Pagina AS Pagina,
+               @TamanoPagina AS TamanoPagina;
+
+        SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, s.Estado,
+               (SELECT COUNT(*) FROM Paquetes p WHERE p.SalonId = s.Id) AS TotalPaquetes,
+               (SELECT TOP 1 f.Url FROM FotosSalon f WHERE f.SalonId = s.Id ORDER BY f.Id) AS FotoPrincipal,
+               (SELECT COUNT(*) FROM FotosSalon f WHERE f.SalonId = s.Id) AS TotalFotos
+        FROM Salones s
+        WHERE @AdminId IS NULL OR s.AdminId = @AdminId
+        ORDER BY s.Id DESC
+        OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+        FETCH NEXT @TamanoPagina ROWS ONLY;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Listar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Regresa SIEMPRE 3 result sets (salón, paquetes, fotos), vacíos si el salón no existe,
+-- para que la API los pueda leer en orden.
+CREATE OR ALTER PROCEDURE sp_Salon_Obtener
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        IF EXISTS (SELECT 1 FROM Salones WHERE Id = @Id)
+            SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+        ELSE
+            SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.';
+
+        SELECT Id, AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion
+        FROM Salones WHERE Id = @Id;
+
+        SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+        FROM Paquetes WHERE SalonId = @Id ORDER BY Id;
+
+        SELECT Id, SalonId, Url
+        FROM FotosSalon WHERE SalonId = @Id ORDER BY Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Obtener';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 4) Confirmar o rechazar una solicitud (lo expone la HU-18)
+-- -------------------------------------------------------------------------
+-- @Estado: 'confirmada' o 'rechazada'. Solo el administrador dueño del salón y solo si sigue 'pendiente'.
+--  - Confirmar: en una transacción la confirma y rechaza las demás pendientes del mismo salón y fecha.
+--    Si la fecha ya está ocupada (solicitud o reservación confirmada) → 4002 y no cambia nada.
+--  - Rechazar: solo cambia esa solicitud; la fecha sigue disponible.
+-- Regresa la solicitud con su nuevo estado y cuántas pendientes se rechazaron automáticamente.
+CREATE OR ALTER PROCEDURE sp_Solicitud_CambiarEstado
+    @Id      INT,
+    @AdminId INT,
+    @Estado  NVARCHAR(20),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET XACT_ABORT ON;
+
+        SET @Estado = LOWER(TRIM(@Estado));
+
+        IF @Estado IS NULL OR @Estado NOT IN ('confirmada', 'rechazada')
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El estado debe ser "confirmada" o "rechazada".'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+        BEGIN SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.'; RETURN; END
+
+        DECLARE @SalonId INT, @FechaEvento DATE, @EstadoActual NVARCHAR(20);
+        SELECT @SalonId = SalonId, @FechaEvento = FechaEvento, @EstadoActual = Estado
+        FROM Solicitudes WHERE Id = @Id;
+
+        IF @SalonId IS NULL
+        BEGIN SELECT @Codigo = 4001, @Mensaje = N'La solicitud no existe.'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId AND AdminId = @AdminId)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño del salón de esta solicitud.'; RETURN; END
+
+        IF @EstadoActual <> 'pendiente'
+        BEGIN SELECT @Codigo = 4006, @Mensaje = N'La solicitud ya fue atendida.'; RETURN; END
+
+        DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+        IF @Estado = 'confirmada' AND @FechaEvento < @Hoy
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'No se puede confirmar: la fecha del evento ya pasó.'; RETURN; END
+
+        DECLARE @Rechazadas INT = 0;
+
+        BEGIN TRY
+            BEGIN TRAN;
+
+            -- Se vuelve a revisar con bloqueo: otra petición pudo atenderla entre la validación y aquí.
+            IF NOT EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id AND Estado = 'pendiente')
+            BEGIN
+                ROLLBACK;
+                SELECT @Codigo = 4006, @Mensaje = N'La solicitud ya fue atendida.';
+                RETURN;
+            END
+
+            IF @Estado = 'confirmada'
+            BEGIN
+                -- UPDLOCK + HOLDLOCK: mientras dura la transacción nadie más confirma ni crea en ese salón y fecha.
+                IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                           WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+                   OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                              WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+                BEGIN
+                    ROLLBACK;
+                    SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+                    RETURN;
+                END
+
+                UPDATE Solicitudes SET Estado = 'confirmada' WHERE Id = @Id;
+
+                -- Bloqueo de fecha: las demás pendientes de ese salón y día ya no pueden atenderse.
+                UPDATE Solicitudes SET Estado = 'rechazada'
+                WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'pendiente' AND Id <> @Id;
+
+                SET @Rechazadas = @@ROWCOUNT;
+            END
+            ELSE
+                UPDATE Solicitudes SET Estado = 'rechazada' WHERE Id = @Id;
+
+            COMMIT;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK;
+
+            -- UX_Solicitudes_Confirmada: otra confirmación del mismo salón y fecha ganó la carrera.
+            IF ERROR_NUMBER() IN (2601, 2627)
+            BEGIN SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.'; RETURN; END;
+
+            THROW;
+        END CATCH
+
+        SELECT @Codigo = 0,
+               @Mensaje = CASE WHEN @Estado = 'confirmada'
+                               THEN CONCAT(N'Solicitud confirmada. Se rechazaron ', @Rechazadas,
+                                           N' solicitud(es) pendiente(s) de esa fecha.')
+                               ELSE N'Solicitud rechazada.' END;
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion, @Rechazadas AS SolicitudesRechazadas
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        WHERE s.Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_CambiarEstado';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 3) Crear solicitud: la fecha ocupada también cuenta las reservaciones confirmadas
+-- -------------------------------------------------------------------------
+-- Igual que en 08_SolicitudesHU15.sql; solo cambia la revisión de fecha ocupada (paso 5).
+CREATE OR ALTER PROCEDURE sp_Solicitud_Crear
+    @ClienteId        INT,
+    @SalonId          INT,
+    @PaqueteId        INT = NULL,
+    @FechaEvento      DATE,
+    @TipoEvento       NVARCHAR(100),
+    @NumeroInvitados  INT,
+    @TelefonoContacto NVARCHAR(20),
+    @Comentarios      NVARCHAR(500) = NULL,
+    @Codigo           INT OUTPUT,
+    @Mensaje          NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET XACT_ABORT ON;
+
+        DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+        IF @TipoCuenta IS NULL
+        BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+        IF @TipoCuenta <> 'cliente'
+        BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden enviar solicitudes.'; RETURN; END
+
+        DECLARE @Capacidad INT = (SELECT Capacidad FROM Salones WHERE Id = @SalonId AND Estado = 'publicado');
+
+        IF @Capacidad IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe o no está publicado.'; RETURN; END
+
+        IF @PaqueteId IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE Id = @PaqueteId AND SalonId = @SalonId)
+        BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe o no es de ese salón.'; RETURN; END
+
+        SET @TipoEvento = TRIM(@TipoEvento);
+        SET @TelefonoContacto = TRIM(@TelefonoContacto);
+        SET @Comentarios = NULLIF(TRIM(@Comentarios), '');
+
+        -- "Hoy" en la hora del centro de México: la BD corre en UTC y de noche ya sería mañana.
+        DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+        IF ISNULL(@TipoEvento, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de evento es obligatorio.'; RETURN; END
+
+        IF ISNULL(@TelefonoContacto, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El teléfono de contacto es obligatorio.'; RETURN; END
+
+        IF @FechaEvento IS NULL OR @FechaEvento < @Hoy
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La fecha del evento no puede ser una fecha pasada.'; RETURN; END
+
+        IF ISNULL(@NumeroInvitados, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El número de invitados debe ser mayor a 0.'; RETURN; END
+
+        IF @NumeroInvitados > @Capacidad
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'Los invitados exceden la capacidad del salón.'; RETURN; END
+
+        DECLARE @Id INT;
+
+        BEGIN TRY
+            BEGIN TRAN;
+
+            -- UPDLOCK + HOLDLOCK bloquean el salón y la fecha hasta el COMMIT: si al mismo tiempo
+            -- se confirma una solicitud de ese día, una operación espera a la otra.
+            -- Ocupada = solicitud confirmada (HU-17) o reservación confirmada (HU-11).
+            IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                       WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+               OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                          WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+            BEGIN
+                ROLLBACK;
+                SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+                RETURN;
+            END
+
+            -- Estado y FechaCreacion explícitos para no depender de los DEFAULT.
+            INSERT INTO Solicitudes (SalonId, ClienteId, PaqueteId, FechaEvento, TipoEvento, NumeroInvitados,
+                                     Comentarios, Estado, FechaCreacion, TelefonoContacto)
+            VALUES (@SalonId, @ClienteId, @PaqueteId, @FechaEvento, @TipoEvento, @NumeroInvitados,
+                    @Comentarios, 'pendiente', SYSUTCDATETIME(), @TelefonoContacto);
+
+            SET @Id = SCOPE_IDENTITY();
+
+            COMMIT;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK;
+
+            -- UX_Solicitudes_Cliente_Salon_Fecha_Pendiente rechaza una segunda solicitud pendiente
+            -- del mismo cliente, salón y fecha (también si llegan dos al mismo tiempo).
+            IF ERROR_NUMBER() IN (2601, 2627)
+            BEGIN SELECT @Codigo = 4004, @Mensaje = N'Ya tienes una solicitud pendiente para ese salón y fecha.'; RETURN; END;
+
+            THROW;
+        END CATCH
+
+        SELECT @Codigo = 0, @Mensaje = N'Solicitud enviada correctamente.';
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        WHERE s.Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_Crear';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Solicitudes del cliente paginadas, de la más reciente a la más antigua.
+-- Sin solicitudes NO es error: éxito con lista vacía.
+-- Siempre regresa los 2 result sets (paginado y página), también con error, igual que
+-- sp_Salon_Listar; con error la página va vacía y el paginado en 0.
+-- FotoPrincipal = la primera foto del salón (por Id); NULL si no tiene.
+CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorCliente
+    @ClienteId    INT,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+        SET @TamanoPagina = CASE
+            WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+            WHEN @TamanoPagina > 100 THEN 100
+            ELSE @TamanoPagina END;
+
+        DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+        DECLARE @Total INT = 0;
+
+        IF @TipoCuenta IS NULL
+            SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.';
+        ELSE IF @TipoCuenta <> 'cliente'
+            SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden consultar solicitudes.';
+        ELSE
+        BEGIN
+            SET @Total = (SELECT COUNT(*) FROM Solicitudes WHERE ClienteId = @ClienteId);
+            SELECT @Codigo = 0,
+                   @Mensaje = CASE WHEN @Total = 0 THEN N'No tienes solicitudes registradas.'
+                                   ELSE N'Consulta exitosa.' END;
+        END
+
+        SELECT @Total AS TotalRegistros,
+               (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+               @Pagina AS Pagina,
+               @TamanoPagina AS TamanoPagina;
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion, f.Url AS FotoPrincipal
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        OUTER APPLY (SELECT TOP 1 fs.Url FROM FotosSalon fs WHERE fs.SalonId = s.SalonId ORDER BY fs.Id) f
+        WHERE s.ClienteId = @ClienteId AND @Codigo = 0
+        ORDER BY s.FechaCreacion DESC, s.Id DESC
+        OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+        FETCH NEXT @TamanoPagina ROWS ONLY;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_ListarPorCliente';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Solicitudes de UN salón, solo para el administrador dueño, ordenadas por fecha del evento
+-- (las más próximas primero). @Estado: 'pendiente' (por defecto), 'confirmada', 'rechazada' o 'todas'.
+-- Incluye el nombre del cliente y el precio del paquete para el panel del administrador (HU-19).
+-- Siempre regresa los 2 result sets (paginado y página), como sp_Solicitud_ListarPorCliente;
+-- con error, la página va vacía y el paginado en 0. FotoPrincipal: primera foto del salón o NULL.
+CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorSalon
+    @SalonId      INT,
+    @AdminId      INT,
+    @Estado       NVARCHAR(20) = NULL,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+        SET @TamanoPagina = CASE
+            WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+            WHEN @TamanoPagina > 100 THEN 100
+            ELSE @TamanoPagina END;
+        SET @Estado = ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), 'pendiente');
+
+        DECLARE @Total INT = 0;
+        SET @Codigo = 0;
+
+        IF @Estado NOT IN ('pendiente', 'confirmada', 'rechazada', 'todas')
+            SELECT @Codigo = 1001, @Mensaje = N'El estado debe ser pendiente, confirmada, rechazada o todas.';
+        ELSE IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+            SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.';
+        ELSE IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+            SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.';
+        ELSE IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId AND AdminId = @AdminId)
+            SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño de este salón.';
+        ELSE
+        BEGIN
+            SET @Total = (SELECT COUNT(*) FROM Solicitudes
+                          WHERE SalonId = @SalonId AND (@Estado = 'todas' OR Estado = @Estado));
+            SELECT @Mensaje = CASE WHEN @Total = 0 THEN N'El salón no tiene solicitudes con ese estado.'
+                                   ELSE N'Consulta exitosa.' END;
+        END
+
+        SELECT @Total AS TotalRegistros,
+               (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+               @Pagina AS Pagina,
+               @TamanoPagina AS TamanoPagina;
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, u.NombreCompleto AS NombreCliente,
+               s.PaqueteId, p.NombrePaquete, p.Precio AS PrecioPaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion, f.Url AS FotoPrincipal
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        JOIN Usuarios u ON u.Id = s.ClienteId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        OUTER APPLY (SELECT TOP 1 fs.Url FROM FotosSalon fs WHERE fs.SalonId = s.SalonId ORDER BY fs.Id) f
+        WHERE s.SalonId = @SalonId AND @Codigo = 0
+          AND (@Estado = 'todas' OR s.Estado = @Estado)
+        ORDER BY s.FechaEvento, s.Id
+        OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+        FETCH NEXT @TamanoPagina ROWS ONLY;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_ListarPorSalon';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Datos y estado actual de una solicitud, con el nombre del salón y del paquete.
+-- Solo el cliente que la creó puede consultarla.
+CREATE OR ALTER PROCEDURE sp_Solicitud_Obtener
+    @Id        INT,
+    @ClienteId INT,
+    @Codigo    INT OUTPUT,
+    @Mensaje   NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+        IF @TipoCuenta IS NULL
+        BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+        IF @TipoCuenta <> 'cliente'
+        BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden consultar solicitudes.'; RETURN; END
+
+        DECLARE @DuenoId INT = (SELECT ClienteId FROM Solicitudes WHERE Id = @Id);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 4001, @Mensaje = N'La solicitud no existe.'; RETURN; END
+
+        IF @DuenoId <> @ClienteId
+        BEGIN SELECT @Codigo = 4005, @Mensaje = N'No tienes acceso a esta solicitud.'; RETURN; END
+
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        WHERE s.Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_Obtener';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Convierte una cuenta de cliente en administrador. La API verifica la contraseña ANTES.
+-- El UPDATE exige TipoCuenta = 'cliente': si dos peticiones llegan a la vez, solo una convierte.
+-- Correo, contraseña, solicitudes y reservaciones no cambian. NombreSalon queda como estaba (NULL).
+CREATE OR ALTER PROCEDURE sp_Usuario_ConvertirAAdministrador
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        UPDATE Usuarios SET TipoCuenta = 'administrador' WHERE Id = @Id AND TipoCuenta = 'cliente';
+
+        IF @@ROWCOUNT = 0
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+                SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.';
+            ELSE
+                SELECT @Codigo = 1006, @Mensaje = N'La cuenta ya es de administrador.';
+            RETURN;
+        END
+
+        SELECT @Codigo = 0, @Mensaje = N'Tu cuenta ahora es de administrador.';
+
+        SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_ConvertirAAdministrador';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement CREATE OR ALTER PROCEDURE sp_Usuario_Obtener
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+        BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_Obtener';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- El usuario CON su PasswordHash: solo lo usa la API para verificar la contraseña (nunca sale en
+-- una respuesta). 1005 si no existe.
+CREATE OR ALTER PROCEDURE sp_Usuario_ObtenerCredenciales
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+        BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT Id, NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_ObtenerCredenciales';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Para el login: regresa el hash y la API lo verifica (el SP no puede verificar PBKDF2).
+CREATE OR ALTER PROCEDURE sp_Usuario_ObtenerPorCorreo
+    @Correo  NVARCHAR(150),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT Id, NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Correo = LOWER(TRIM(@Correo));
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_ObtenerPorCorreo';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- =========================================================================
+-- USUARIOS
+-- =========================================================================
+-- La API manda la contraseña ya hasheada (PBKDF2); el SP nunca ve el texto plano.
+CREATE OR ALTER PROCEDURE sp_Usuario_Registrar
+    @NombreCompleto NVARCHAR(150),
+    @Correo         NVARCHAR(150),
+    @PasswordHash   NVARCHAR(MAX),
+    @TipoCuenta     NVARCHAR(20),
+    @NombreSalon    NVARCHAR(150) = NULL,
+    @Codigo         INT OUTPUT,
+    @Mensaje        NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @NombreCompleto = TRIM(@NombreCompleto);
+        SET @Correo = LOWER(TRIM(@Correo));
+        SET @TipoCuenta = LOWER(TRIM(@TipoCuenta));
+        SET @NombreSalon = NULLIF(TRIM(@NombreSalon), '');
+
+        IF ISNULL(@NombreCompleto, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'Escribe tu nombre completo.'; RETURN; END
+
+        IF ISNULL(@Correo, '') NOT LIKE '_%@_%._%'
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El formato del correo no es válido.'; RETURN; END
+
+        IF ISNULL(@TipoCuenta, '') NOT IN ('cliente', 'administrador')
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de cuenta debe ser "cliente" o "administrador".'; RETURN; END
+
+        IF @TipoCuenta = 'administrador' AND @NombreSalon IS NULL
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'Escribe el nombre de tu salón.'; RETURN; END
+
+        IF EXISTS (SELECT 1 FROM Usuarios WHERE Correo = @Correo)
+        BEGIN SELECT @Codigo = 1002, @Mensaje = N'Ya existe una cuenta con este correo.'; RETURN; END
+
+        INSERT INTO Usuarios (NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro)
+        VALUES (@NombreCompleto, @Correo, @PasswordHash, @TipoCuenta,
+                CASE WHEN @TipoCuenta = 'administrador' THEN @NombreSalon END, GETDATE());
+
+        SELECT @Codigo = 0, @Mensaje = N'Cuenta creada correctamente.';
+
+        SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Id = SCOPE_IDENTITY();
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_Registrar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement /* Versión anterior de cada SP (de ahí sale el cuerpo; la migración M014 la restaura en Down):
+     sp_FotoSalon_Agregar                 12_FotosSalonHU07.sql
+     sp_FotoSalon_Eliminar                12_FotosSalonHU07.sql
+     sp_Paquete_Actualizar                02_StoredProcedures.sql
+     sp_Paquete_Crear                     02_StoredProcedures.sql
+     sp_Paquete_Eliminar                  02_StoredProcedures.sql
+     sp_Salon_Actualizar                  02_StoredProcedures.sql
+     sp_Salon_Buscar                      13_FotosPreviewBuscar.sql
+     sp_Salon_Crear                       02_StoredProcedures.sql
+     sp_Salon_Disponibilidad              09_EstadoSolicitudesHU17.sql
+     sp_Salon_Eliminar                    14_MisSalonesAdmin.sql
+     sp_Salon_Listar                      14_MisSalonesAdmin.sql
+     sp_Salon_Obtener                     02_StoredProcedures.sql
+     sp_Solicitud_CambiarEstado           09_EstadoSolicitudesHU17.sql
+     sp_Solicitud_Crear                   09_EstadoSolicitudesHU17.sql
+     sp_Solicitud_ListarPorCliente        18_FotoSolicitudesYConversionAdmin.sql
+     sp_Solicitud_ListarPorSalon          18_FotoSolicitudesYConversionAdmin.sql
+     sp_Solicitud_Obtener                 08_SolicitudesHU15.sql
+     sp_Usuario_ConvertirAAdministrador   18_FotoSolicitudesYConversionAdmin.sql
+     sp_Usuario_Obtener                   02_StoredProcedures.sql
+     sp_Usuario_ObtenerCredenciales       18_FotoSolicitudesYConversionAdmin.sql
+     sp_Usuario_ObtenerPorCorreo          02_StoredProcedures.sql
+     sp_Usuario_Registrar                 02_StoredProcedures.sql
+*/
+Committing Transaction
+202611251000: M014_TryCatchBitacora migrated
+Task completed.
+===== 3. verificar: 22 SP con TRY/CATCH y la bit�cora =====
+
+SpTotales SpConTryCatchYBitacora TablaBitacora SpBitacora
+--------- ---------------------- ------------- ----------
+       22                     22 si            si
+(1 filas)
+===== 4. la bit�cora guarda el error y lo relanza =====
+
+(0 filas)
+
+Id Procedimiento    NumeroError Linea Mensaje                          
+-- -------------    ----------- ----- -------                          
+ 1 prueba_evidencia        8134     1 Divide by zero error encountered.
+(1 filas)
+===== 5. rollback (deshace la 014) =====
+-------------------------------------------------------------------------------
+202611251000: M014_TryCatchBitacora reverting
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement -- Registra la URL de una foto ya subida al almacenamiento. Solo el dueño, máximo 8 fotos por salón.
+-- El salón se bloquea (UPDLOCK) mientras se cuenta: dos subidas al mismo tiempo no pasan de 8.
+-- Con error no inserta nada y el API borra el archivo que ya había subido (sin huérfanos).
+CREATE OR ALTER PROCEDURE sp_FotoSalon_Agregar
+    @SalonId INT,
+    @AdminId INT,
+    @Url     NVARCHAR(500),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @DuenoId INT, @Id INT;
+
+    BEGIN TRANSACTION;
+
+    SELECT @DuenoId = AdminId FROM Salones WITH (UPDLOCK, HOLDLOCK) WHERE Id = @SalonId;
+
+    IF @DuenoId IS NULL
+    BEGIN ROLLBACK; SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN ROLLBACK; SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    IF (SELECT COUNT(*) FROM FotosSalon WHERE SalonId = @SalonId) >= 8
+    BEGIN ROLLBACK; SELECT @Codigo = 2008, @Mensaje = N'El salón ya tiene 8 fotos. Elimina una para subir otra.'; RETURN; END
+
+    INSERT INTO FotosSalon (SalonId, Url) VALUES (@SalonId, @Url);
+    SET @Id = SCOPE_IDENTITY();
+
+    COMMIT;
+
+    SELECT @Codigo = 0, @Mensaje = N'Foto subida correctamente.';
+    SELECT Id, SalonId, Url FROM FotosSalon WHERE Id = @Id;
+END
+ExecuteSqlStatement -- Elimina una foto del salón y regresa su URL para que el API borre el archivo.
+-- @SoloValidar = 1: hace las mismas validaciones y regresa la foto SIN borrarla. El API lo usa
+-- para borrar primero el archivo: si el almacenamiento falla, el registro sigue y se puede reintentar.
+CREATE OR ALTER PROCEDURE sp_FotoSalon_Eliminar
+    @SalonId     INT,
+    @FotoId      INT,
+    @AdminId     INT,
+    @SoloValidar BIT = 0,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @SalonId);
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM FotosSalon WHERE Id = @FotoId AND SalonId = @SalonId)
+    BEGIN SELECT @Codigo = 2009, @Mensaje = N'La foto no existe o no es de este salón.'; RETURN; END
+
+    SELECT Id, SalonId, Url FROM FotosSalon WHERE Id = @FotoId;
+
+    IF ISNULL(@SoloValidar, 0) = 0
+    BEGIN
+        DELETE FROM FotosSalon WHERE Id = @FotoId;
+        SELECT @Codigo = 0, @Mensaje = N'Foto eliminada correctamente.';
+    END
+    ELSE
+        SELECT @Codigo = 0, @Mensaje = N'Foto encontrada.';
+END
+ExecuteSqlStatement -- Descripcion NULL la borra.
+CREATE OR ALTER PROCEDURE sp_Paquete_Actualizar
+    @Id            INT,
+    @AdminId       INT,
+    @NombrePaquete NVARCHAR(150),
+    @Descripcion   NVARCHAR(500) = NULL,
+    @Precio        DECIMAL(10,2),
+    @Codigo        INT OUTPUT,
+    @Mensaje       NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @DuenoId INT = (
+        SELECT s.AdminId FROM Paquetes p JOIN Salones s ON s.Id = p.SalonId WHERE p.Id = @Id);
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    SET @NombrePaquete = TRIM(@NombrePaquete);
+    SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+    IF ISNULL(@NombrePaquete, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del paquete es obligatorio.'; RETURN; END
+
+    IF ISNULL(@Precio, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El precio debe ser mayor a 0.'; RETURN; END
+
+    UPDATE Paquetes
+    SET NombrePaquete = @NombrePaquete, Descripcion = @Descripcion, Precio = @Precio
+    WHERE Id = @Id;
+
+    SELECT @Codigo = 0, @Mensaje = N'Paquete actualizado correctamente.';
+
+    SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+    FROM Paquetes WHERE Id = @Id;
+END
+ExecuteSqlStatement -- =========================================================================
+-- PAQUETES
+-- =========================================================================
+
+CREATE OR ALTER PROCEDURE sp_Paquete_Crear
+    @SalonId       INT,
+    @AdminId       INT,
+    @NombrePaquete NVARCHAR(150),
+    @Descripcion   NVARCHAR(500) = NULL,
+    @Precio        DECIMAL(10,2),
+    @Codigo        INT OUTPUT,
+    @Mensaje       NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @SalonId);
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    SET @NombrePaquete = TRIM(@NombrePaquete);
+    SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+    IF ISNULL(@NombrePaquete, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del paquete es obligatorio.'; RETURN; END
+
+    IF ISNULL(@Precio, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El precio debe ser mayor a 0.'; RETURN; END
+
+    INSERT INTO Paquetes (SalonId, NombrePaquete, Descripcion, Precio)
+    VALUES (@SalonId, @NombrePaquete, @Descripcion, @Precio);
+
+    SELECT @Codigo = 0, @Mensaje = N'Paquete agregado correctamente.';
+
+    SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+    FROM Paquetes WHERE Id = SCOPE_IDENTITY();
+END
+ExecuteSqlStatement -- No deja un salón publicado sin paquetes.
+CREATE OR ALTER PROCEDURE sp_Paquete_Eliminar
+    @Id      INT,
+    @AdminId INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @SalonId INT, @DuenoId INT, @Estado NVARCHAR(20);
+    SELECT @SalonId = s.Id, @DuenoId = s.AdminId, @Estado = s.Estado
+    FROM Paquetes p JOIN Salones s ON s.Id = p.SalonId
+    WHERE p.Id = @Id;
+
+    IF @SalonId IS NULL
+    BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    IF @Estado = 'publicado' AND (SELECT COUNT(*) FROM Paquetes WHERE SalonId = @SalonId) <= 1
+    BEGIN SELECT @Codigo = 3002, @Mensaje = N'Un salón publicado debe tener al menos un paquete. Despublícalo antes de borrar el último.'; RETURN; END
+
+    DELETE FROM Paquetes WHERE Id = @Id;
+
+    SELECT @Codigo = 0, @Mensaje = N'Paquete eliminado correctamente.';
+END
+ExecuteSqlStatement -- Si @Estado viene NULL se conserva el actual. Descripcion NULL la borra.
+CREATE OR ALTER PROCEDURE sp_Salon_Actualizar
+    @Id          INT,
+    @AdminId     INT,
+    @Nombre      NVARCHAR(150),
+    @Zona        NVARCHAR(200),
+    @Capacidad   INT,
+    @Descripcion NVARCHAR(1000) = NULL,
+    @Estado      NVARCHAR(20) = NULL,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @DuenoId INT, @EstadoActual NVARCHAR(20);
+    SELECT @DuenoId = AdminId, @EstadoActual = Estado FROM Salones WHERE Id = @Id;
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    IF @DuenoId <> ISNULL(@AdminId, 0)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+    SET @Nombre = TRIM(@Nombre);
+    SET @Zona = TRIM(@Zona);
+    SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+    SET @Estado = ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), @EstadoActual);
+
+    IF ISNULL(@Nombre, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del salón es obligatorio.'; RETURN; END
+
+    IF ISNULL(@Zona, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La zona es obligatoria.'; RETURN; END
+
+    IF ISNULL(@Capacidad, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La capacidad debe ser mayor a 0.'; RETURN; END
+
+    IF @Estado NOT IN ('publicado', 'no_publicado')
+    BEGIN SELECT @Codigo = 2004, @Mensaje = N'El estado debe ser "publicado" o "no_publicado".'; RETURN; END
+
+    IF @Estado = 'publicado' AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE SalonId = @Id)
+    BEGIN SELECT @Codigo = 2003, @Mensaje = N'Para publicar el salón se requiere al menos un paquete.'; RETURN; END
+
+    UPDATE Salones
+    SET Nombre = @Nombre, Zona = @Zona, Capacidad = @Capacidad,
+        Descripcion = @Descripcion, Estado = @Estado
+    WHERE Id = @Id;
+
+    SELECT @Codigo = 0, @Mensaje = N'Salón actualizado correctamente.';
+END
+ExecuteSqlStatement -- Búsqueda pública: solo salones publicados. Todos los filtros son opcionales y combinables;
+-- NULL, vacío o <= 0 significa "sin filtro". Nunca regresa error: sin resultados es éxito con lista vacía.
+-- Zona: coincidencia parcial sin importar mayúsculas ni acentos ("rio" encuentra "Tepeji del Río").
+-- PrecioMaximo: el salón entra si su paquete más barato (PrecioDesde) cuesta eso o menos.
+-- Result sets: 1) datos del paginado, 2) salones de la página, 3) hasta 5 fotos por salón de la página
+-- (SalonId, Url) en orden de Id de foto.
+CREATE OR ALTER PROCEDURE sp_Salon_Buscar
+    @Zona            NVARCHAR(200) = NULL,
+    @CapacidadMinima INT = NULL,
+    @PrecioMaximo    DECIMAL(10,2) = NULL,
+    @Pagina          INT = 1,
+    @TamanoPagina    INT = 10,
+    @Codigo          INT OUTPUT,
+    @Mensaje         NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+    SET @Zona = NULLIF(TRIM(@Zona), '');
+    IF @CapacidadMinima <= 0 SET @CapacidadMinima = NULL;
+    IF @PrecioMaximo <= 0 SET @PrecioMaximo = NULL;
+
+    SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, p.PrecioDesde,
+           (SELECT TOP 1 f.Url FROM FotosSalon f WHERE f.SalonId = s.Id ORDER BY f.Id) AS FotoPrincipal
+    INTO #Resultados
+    FROM Salones s
+    CROSS APPLY (SELECT MIN(Precio) AS PrecioDesde FROM Paquetes WHERE SalonId = s.Id) p
+    WHERE s.Estado = 'publicado'
+      AND p.PrecioDesde IS NOT NULL
+      AND (@Zona IS NULL
+           OR s.Zona COLLATE Latin1_General_CI_AI LIKE N'%' + @Zona + N'%' COLLATE Latin1_General_CI_AI)
+      AND (@CapacidadMinima IS NULL OR s.Capacidad >= @CapacidadMinima)
+      AND (@PrecioMaximo IS NULL OR p.PrecioDesde <= @PrecioMaximo)
+    -- Con filtros opcionales, RECOMPILE arma el plan con los valores reales de cada búsqueda
+    -- para que SQL Server sí use los índices de 03_Indices.sql.
+    OPTION (RECOMPILE);
+
+    DECLARE @Total INT = (SELECT COUNT(*) FROM #Resultados);
+
+    -- La página se guarda una vez para usarla en el result set 2 y en el 3 con el mismo orden.
+    SELECT Id, Nombre, Zona, Capacidad, PrecioDesde, FotoPrincipal
+    INTO #Pagina
+    FROM #Resultados
+    ORDER BY PrecioDesde, Id
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN @Total = 0 THEN N'No se encontraron salones con esos filtros.'
+                           ELSE N'Consulta exitosa.' END;
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT Id, Nombre, Zona, Capacidad, PrecioDesde, FotoPrincipal
+    FROM #Pagina
+    ORDER BY PrecioDesde, Id;
+
+    SELECT x.SalonId, x.Url
+    FROM (SELECT f.SalonId, f.Url,
+                 ROW_NUMBER() OVER (PARTITION BY f.SalonId ORDER BY f.Id) AS Orden
+          FROM FotosSalon f
+          INNER JOIN #Pagina pg ON pg.Id = f.SalonId) x
+    WHERE x.Orden <= 5
+    ORDER BY x.SalonId, x.Orden;
+END
+ExecuteSqlStatement -- =========================================================================
+-- SALONES
+-- =========================================================================
+
+CREATE OR ALTER PROCEDURE sp_Salon_Crear
+    @AdminId     INT,
+    @Nombre      NVARCHAR(150),
+    @Zona        NVARCHAR(200),
+    @Capacidad   INT,
+    @Descripcion NVARCHAR(1000) = NULL,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Nombre = TRIM(@Nombre);
+    SET @Zona = TRIM(@Zona);
+    SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+    IF ISNULL(@Nombre, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del salón es obligatorio.'; RETURN; END
+
+    IF ISNULL(@Zona, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La zona es obligatoria.'; RETURN; END
+
+    IF ISNULL(@Capacidad, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La capacidad debe ser mayor a 0.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+    BEGIN SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.'; RETURN; END
+
+    -- Siempre nace "no_publicado": todavía no tiene paquetes.
+    INSERT INTO Salones (AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion)
+    VALUES (@AdminId, @Nombre, @Zona, @Capacidad, @Descripcion, 'no_publicado', GETDATE());
+
+    SELECT @Codigo = 0, @Mensaje = N'Salón creado correctamente.';
+
+    SELECT Id, AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion
+    FROM Salones WHERE Id = SCOPE_IDENTITY();
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 2) Disponibilidad: reservaciones confirmadas + solicitudes confirmadas
+-- -------------------------------------------------------------------------
+-- Regresa las fechas ocupadas del mes. Mes fuera de 1–12 o año fuera de 2000–2100 → 1001;
+-- salón inexistente → 2001; mes sin ocupadas = éxito con lista vacía.
+CREATE OR ALTER PROCEDURE sp_Salon_Disponibilidad
+    @SalonId INT,
+    @Anio    INT,
+    @Mes     INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF ISNULL(@Mes, 0) NOT BETWEEN 1 AND 12 OR ISNULL(@Anio, 0) NOT BETWEEN 2000 AND 2100
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Mes o año inválido.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    DECLARE @Inicio DATE = DATEFROMPARTS(@Anio, @Mes, 1);
+    DECLARE @Fin DATE = DATEADD(MONTH, 1, @Inicio);
+
+    -- UNION quita repetidos: una fecha aparece una vez aunque esté en las dos tablas.
+    SELECT FechaEvento
+    INTO #Fechas
+    FROM (
+        SELECT FechaEvento FROM Reservaciones
+        WHERE SalonId = @SalonId AND Estado = 'confirmada' AND FechaEvento >= @Inicio AND FechaEvento < @Fin
+        UNION
+        SELECT FechaEvento FROM Solicitudes
+        WHERE SalonId = @SalonId AND Estado = 'confirmada' AND FechaEvento >= @Inicio AND FechaEvento < @Fin
+    ) ocupadas;
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN NOT EXISTS (SELECT 1 FROM #Fechas)
+                           THEN N'El salón no tiene fechas ocupadas en ese mes.'
+                           ELSE N'Consulta exitosa.' END;
+
+    SELECT FechaEvento FROM #Fechas ORDER BY FechaEvento;
+END
+ExecuteSqlStatement -- Elimina el salón con sus fotos (registros), paquetes, favoritas, solicitudes rechazadas y
+-- reservaciones no confirmadas. Solo el dueño. No se elimina si hay algo por atender o ya
+-- confirmado: primero hay que resolverlo.
+CREATE OR ALTER PROCEDURE sp_Salon_Eliminar
+    @Id      INT,
+    @AdminId INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @Id);
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+    IF @DuenoId <> @AdminId
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño de este salón.'; RETURN; END
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        -- UPDLOCK + HOLDLOCK: si al mismo tiempo llega una solicitud o se confirma una, una
+        -- operación espera a la otra (no se borra un salón con algo recién confirmado).
+        IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                   WHERE SalonId = @Id AND Estado IN ('pendiente', 'confirmada'))
+           OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                      WHERE SalonId = @Id AND Estado = 'confirmada')
+        BEGIN
+            ROLLBACK;
+            SELECT @Codigo = 2010, @Mensaje = N'Tiene solicitudes pendientes o confirmadas; resuélvelas antes de eliminar el salón.';
+            RETURN;
+        END
+
+        DELETE FROM Solicitudes        WHERE SalonId = @Id; -- solo quedan rechazadas
+        DELETE FROM Reservaciones      WHERE SalonId = @Id; -- solo quedan pendientes o canceladas
+        DELETE FROM FotosSalon         WHERE SalonId = @Id;
+        DELETE FROM Paquetes           WHERE SalonId = @Id;
+        DELETE FROM BusquedasFavoritas WHERE SalonId = @Id;
+        DELETE FROM Salones            WHERE Id = @Id;
+
+        COMMIT;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        SELECT @Codigo = 5000, @Mensaje = N'No se pudo eliminar el salón. Intenta de nuevo más tarde.';
+        RETURN;
+    END CATCH
+
+    SELECT @Codigo = 0, @Mensaje = N'Salón eliminado correctamente.';
+END
+ExecuteSqlStatement -- Paginado: primer result set = datos del paginado, segundo = registros de la página.
+-- @AdminId NULL lista todos. @Pagina < 1 se toma como 1; @TamanoPagina va de 1 a 100.
+-- FotoPrincipal = la primera foto del salón (por Id, igual que la búsqueda); NULL si no tiene.
+CREATE OR ALTER PROCEDURE sp_Salon_Listar
+    @AdminId      INT = NULL,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+
+    DECLARE @Total INT = (SELECT COUNT(*) FROM Salones WHERE @AdminId IS NULL OR AdminId = @AdminId);
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, s.Estado,
+           (SELECT COUNT(*) FROM Paquetes p WHERE p.SalonId = s.Id) AS TotalPaquetes,
+           (SELECT TOP 1 f.Url FROM FotosSalon f WHERE f.SalonId = s.Id ORDER BY f.Id) AS FotoPrincipal,
+           (SELECT COUNT(*) FROM FotosSalon f WHERE f.SalonId = s.Id) AS TotalFotos
+    FROM Salones s
+    WHERE @AdminId IS NULL OR s.AdminId = @AdminId
+    ORDER BY s.Id DESC
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+END
+ExecuteSqlStatement -- Regresa SIEMPRE 3 result sets (salón, paquetes, fotos), vacíos si el salón no existe,
+-- para que la API los pueda leer en orden.
+CREATE OR ALTER PROCEDURE sp_Salon_Obtener
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF EXISTS (SELECT 1 FROM Salones WHERE Id = @Id)
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+    ELSE
+        SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.';
+
+    SELECT Id, AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion
+    FROM Salones WHERE Id = @Id;
+
+    SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+    FROM Paquetes WHERE SalonId = @Id ORDER BY Id;
+
+    SELECT Id, SalonId, Url
+    FROM FotosSalon WHERE SalonId = @Id ORDER BY Id;
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 4) Confirmar o rechazar una solicitud (lo expone la HU-18)
+-- -------------------------------------------------------------------------
+-- @Estado: 'confirmada' o 'rechazada'. Solo el administrador dueño del salón y solo si sigue 'pendiente'.
+--  - Confirmar: en una transacción la confirma y rechaza las demás pendientes del mismo salón y fecha.
+--    Si la fecha ya está ocupada (solicitud o reservación confirmada) → 4002 y no cambia nada.
+--  - Rechazar: solo cambia esa solicitud; la fecha sigue disponible.
+-- Regresa la solicitud con su nuevo estado y cuántas pendientes se rechazaron automáticamente.
+CREATE OR ALTER PROCEDURE sp_Solicitud_CambiarEstado
+    @Id      INT,
+    @AdminId INT,
+    @Estado  NVARCHAR(20),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Estado = LOWER(TRIM(@Estado));
+
+    IF @Estado IS NULL OR @Estado NOT IN ('confirmada', 'rechazada')
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El estado debe ser "confirmada" o "rechazada".'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+    BEGIN SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.'; RETURN; END
+
+    DECLARE @SalonId INT, @FechaEvento DATE, @EstadoActual NVARCHAR(20);
+    SELECT @SalonId = SalonId, @FechaEvento = FechaEvento, @EstadoActual = Estado
+    FROM Solicitudes WHERE Id = @Id;
+
+    IF @SalonId IS NULL
+    BEGIN SELECT @Codigo = 4001, @Mensaje = N'La solicitud no existe.'; RETURN; END
+
+    IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId AND AdminId = @AdminId)
+    BEGIN SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño del salón de esta solicitud.'; RETURN; END
+
+    IF @EstadoActual <> 'pendiente'
+    BEGIN SELECT @Codigo = 4006, @Mensaje = N'La solicitud ya fue atendida.'; RETURN; END
+
+    DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+    IF @Estado = 'confirmada' AND @FechaEvento < @Hoy
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'No se puede confirmar: la fecha del evento ya pasó.'; RETURN; END
+
+    DECLARE @Rechazadas INT = 0;
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        -- Se vuelve a revisar con bloqueo: otra petición pudo atenderla entre la validación y aquí.
+        IF NOT EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id AND Estado = 'pendiente')
+        BEGIN
+            ROLLBACK;
+            SELECT @Codigo = 4006, @Mensaje = N'La solicitud ya fue atendida.';
+            RETURN;
+        END
+
+        IF @Estado = 'confirmada'
+        BEGIN
+            -- UPDLOCK + HOLDLOCK: mientras dura la transacción nadie más confirma ni crea en ese salón y fecha.
+            IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                       WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+               OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                          WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+            BEGIN
+                ROLLBACK;
+                SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+                RETURN;
+            END
+
+            UPDATE Solicitudes SET Estado = 'confirmada' WHERE Id = @Id;
+
+            -- Bloqueo de fecha: las demás pendientes de ese salón y día ya no pueden atenderse.
+            UPDATE Solicitudes SET Estado = 'rechazada'
+            WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'pendiente' AND Id <> @Id;
+
+            SET @Rechazadas = @@ROWCOUNT;
+        END
+        ELSE
+            UPDATE Solicitudes SET Estado = 'rechazada' WHERE Id = @Id;
+
+        COMMIT;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+
+        -- UX_Solicitudes_Confirmada: otra confirmación del mismo salón y fecha ganó la carrera.
+        IF ERROR_NUMBER() IN (2601, 2627)
+        BEGIN SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.'; RETURN; END;
+
+        THROW;
+    END CATCH
+
+    SELECT @Codigo = 0,
+           @Mensaje = CASE WHEN @Estado = 'confirmada'
+                           THEN CONCAT(N'Solicitud confirmada. Se rechazaron ', @Rechazadas,
+                                       N' solicitud(es) pendiente(s) de esa fecha.')
+                           ELSE N'Solicitud rechazada.' END;
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion, @Rechazadas AS SolicitudesRechazadas
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.Id = @Id;
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 3) Crear solicitud: la fecha ocupada también cuenta las reservaciones confirmadas
+-- -------------------------------------------------------------------------
+-- Igual que en 08_SolicitudesHU15.sql; solo cambia la revisión de fecha ocupada (paso 5).
+CREATE OR ALTER PROCEDURE sp_Solicitud_Crear
+    @ClienteId        INT,
+    @SalonId          INT,
+    @PaqueteId        INT = NULL,
+    @FechaEvento      DATE,
+    @TipoEvento       NVARCHAR(100),
+    @NumeroInvitados  INT,
+    @TelefonoContacto NVARCHAR(20),
+    @Comentarios      NVARCHAR(500) = NULL,
+    @Codigo           INT OUTPUT,
+    @Mensaje          NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+    IF @TipoCuenta IS NULL
+    BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+    IF @TipoCuenta <> 'cliente'
+    BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden enviar solicitudes.'; RETURN; END
+
+    DECLARE @Capacidad INT = (SELECT Capacidad FROM Salones WHERE Id = @SalonId AND Estado = 'publicado');
+
+    IF @Capacidad IS NULL
+    BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe o no está publicado.'; RETURN; END
+
+    IF @PaqueteId IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE Id = @PaqueteId AND SalonId = @SalonId)
+    BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe o no es de ese salón.'; RETURN; END
+
+    SET @TipoEvento = TRIM(@TipoEvento);
+    SET @TelefonoContacto = TRIM(@TelefonoContacto);
+    SET @Comentarios = NULLIF(TRIM(@Comentarios), '');
+
+    -- "Hoy" en la hora del centro de México: la BD corre en UTC y de noche ya sería mañana.
+    DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+    IF ISNULL(@TipoEvento, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de evento es obligatorio.'; RETURN; END
+
+    IF ISNULL(@TelefonoContacto, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El teléfono de contacto es obligatorio.'; RETURN; END
+
+    IF @FechaEvento IS NULL OR @FechaEvento < @Hoy
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'La fecha del evento no puede ser una fecha pasada.'; RETURN; END
+
+    IF ISNULL(@NumeroInvitados, 0) <= 0
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El número de invitados debe ser mayor a 0.'; RETURN; END
+
+    IF @NumeroInvitados > @Capacidad
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Los invitados exceden la capacidad del salón.'; RETURN; END
+
+    DECLARE @Id INT;
+
+    BEGIN TRY
+        BEGIN TRAN;
+
+        -- UPDLOCK + HOLDLOCK bloquean el salón y la fecha hasta el COMMIT: si al mismo tiempo
+        -- se confirma una solicitud de ese día, una operación espera a la otra.
+        -- Ocupada = solicitud confirmada (HU-17) o reservación confirmada (HU-11).
+        IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                   WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+           OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                      WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+        BEGIN
+            ROLLBACK;
+            SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+            RETURN;
+        END
+
+        -- Estado y FechaCreacion explícitos para no depender de los DEFAULT.
+        INSERT INTO Solicitudes (SalonId, ClienteId, PaqueteId, FechaEvento, TipoEvento, NumeroInvitados,
+                                 Comentarios, Estado, FechaCreacion, TelefonoContacto)
+        VALUES (@SalonId, @ClienteId, @PaqueteId, @FechaEvento, @TipoEvento, @NumeroInvitados,
+                @Comentarios, 'pendiente', SYSUTCDATETIME(), @TelefonoContacto);
+
+        SET @Id = SCOPE_IDENTITY();
+
+        COMMIT;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+
+        -- UX_Solicitudes_Cliente_Salon_Fecha_Pendiente rechaza una segunda solicitud pendiente
+        -- del mismo cliente, salón y fecha (también si llegan dos al mismo tiempo).
+        IF ERROR_NUMBER() IN (2601, 2627)
+        BEGIN SELECT @Codigo = 4004, @Mensaje = N'Ya tienes una solicitud pendiente para ese salón y fecha.'; RETURN; END;
+
+        THROW;
+    END CATCH
+
+    SELECT @Codigo = 0, @Mensaje = N'Solicitud enviada correctamente.';
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.Id = @Id;
+END
+ExecuteSqlStatement -- Solicitudes del cliente paginadas, de la más reciente a la más antigua.
+-- Sin solicitudes NO es error: éxito con lista vacía.
+-- Siempre regresa los 2 result sets (paginado y página), también con error, igual que
+-- sp_Salon_Listar; con error la página va vacía y el paginado en 0.
+-- FotoPrincipal = la primera foto del salón (por Id); NULL si no tiene.
+CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorCliente
+    @ClienteId    INT,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+
+    DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+    DECLARE @Total INT = 0;
+
+    IF @TipoCuenta IS NULL
+        SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.';
+    ELSE IF @TipoCuenta <> 'cliente'
+        SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden consultar solicitudes.';
+    ELSE
+    BEGIN
+        SET @Total = (SELECT COUNT(*) FROM Solicitudes WHERE ClienteId = @ClienteId);
+        SELECT @Codigo = 0,
+               @Mensaje = CASE WHEN @Total = 0 THEN N'No tienes solicitudes registradas.'
+                               ELSE N'Consulta exitosa.' END;
+    END
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion, f.Url AS FotoPrincipal
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    OUTER APPLY (SELECT TOP 1 fs.Url FROM FotosSalon fs WHERE fs.SalonId = s.SalonId ORDER BY fs.Id) f
+    WHERE s.ClienteId = @ClienteId AND @Codigo = 0
+    ORDER BY s.FechaCreacion DESC, s.Id DESC
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+END
+ExecuteSqlStatement -- Solicitudes de UN salón, solo para el administrador dueño, ordenadas por fecha del evento
+-- (las más próximas primero). @Estado: 'pendiente' (por defecto), 'confirmada', 'rechazada' o 'todas'.
+-- Incluye el nombre del cliente y el precio del paquete para el panel del administrador (HU-19).
+-- Siempre regresa los 2 result sets (paginado y página), como sp_Solicitud_ListarPorCliente;
+-- con error, la página va vacía y el paginado en 0. FotoPrincipal: primera foto del salón o NULL.
+CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorSalon
+    @SalonId      INT,
+    @AdminId      INT,
+    @Estado       NVARCHAR(20) = NULL,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+    SET @TamanoPagina = CASE
+        WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+        WHEN @TamanoPagina > 100 THEN 100
+        ELSE @TamanoPagina END;
+    SET @Estado = ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), 'pendiente');
+
+    DECLARE @Total INT = 0;
+    SET @Codigo = 0;
+
+    IF @Estado NOT IN ('pendiente', 'confirmada', 'rechazada', 'todas')
+        SELECT @Codigo = 1001, @Mensaje = N'El estado debe ser pendiente, confirmada, rechazada o todas.';
+    ELSE IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+        SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.';
+    ELSE IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+        SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.';
+    ELSE IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId AND AdminId = @AdminId)
+        SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño de este salón.';
+    ELSE
+    BEGIN
+        SET @Total = (SELECT COUNT(*) FROM Solicitudes
+                      WHERE SalonId = @SalonId AND (@Estado = 'todas' OR Estado = @Estado));
+        SELECT @Mensaje = CASE WHEN @Total = 0 THEN N'El salón no tiene solicitudes con ese estado.'
+                               ELSE N'Consulta exitosa.' END;
+    END
+
+    SELECT @Total AS TotalRegistros,
+           (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+           @Pagina AS Pagina,
+           @TamanoPagina AS TamanoPagina;
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, u.NombreCompleto AS NombreCliente,
+           s.PaqueteId, p.NombrePaquete, p.Precio AS PrecioPaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion, f.Url AS FotoPrincipal
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    JOIN Usuarios u ON u.Id = s.ClienteId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    OUTER APPLY (SELECT TOP 1 fs.Url FROM FotosSalon fs WHERE fs.SalonId = s.SalonId ORDER BY fs.Id) f
+    WHERE s.SalonId = @SalonId AND @Codigo = 0
+      AND (@Estado = 'todas' OR s.Estado = @Estado)
+    ORDER BY s.FechaEvento, s.Id
+    OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+    FETCH NEXT @TamanoPagina ROWS ONLY;
+END
+ExecuteSqlStatement -- Datos y estado actual de una solicitud, con el nombre del salón y del paquete.
+-- Solo el cliente que la creó puede consultarla.
+CREATE OR ALTER PROCEDURE sp_Solicitud_Obtener
+    @Id        INT,
+    @ClienteId INT,
+    @Codigo    INT OUTPUT,
+    @Mensaje   NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+    IF @TipoCuenta IS NULL
+    BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+    IF @TipoCuenta <> 'cliente'
+    BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden consultar solicitudes.'; RETURN; END
+
+    DECLARE @DuenoId INT = (SELECT ClienteId FROM Solicitudes WHERE Id = @Id);
+
+    IF @DuenoId IS NULL
+    BEGIN SELECT @Codigo = 4001, @Mensaje = N'La solicitud no existe.'; RETURN; END
+
+    IF @DuenoId <> @ClienteId
+    BEGIN SELECT @Codigo = 4005, @Mensaje = N'No tienes acceso a esta solicitud.'; RETURN; END
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+           s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+           s.Estado, s.FechaCreacion
+    FROM Solicitudes s
+    JOIN Salones sa ON sa.Id = s.SalonId
+    LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+    WHERE s.Id = @Id;
+END
+ExecuteSqlStatement -- Convierte una cuenta de cliente en administrador. La API verifica la contraseña ANTES.
+-- El UPDATE exige TipoCuenta = 'cliente': si dos peticiones llegan a la vez, solo una convierte.
+-- Correo, contraseña, solicitudes y reservaciones no cambian. NombreSalon queda como estaba (NULL).
+CREATE OR ALTER PROCEDURE sp_Usuario_ConvertirAAdministrador
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE Usuarios SET TipoCuenta = 'administrador' WHERE Id = @Id AND TipoCuenta = 'cliente';
+
+    IF @@ROWCOUNT = 0
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+            SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.';
+        ELSE
+            SELECT @Codigo = 1006, @Mensaje = N'La cuenta ya es de administrador.';
+        RETURN;
+    END
+
+    SELECT @Codigo = 0, @Mensaje = N'Tu cuenta ahora es de administrador.';
+
+    SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+    FROM Usuarios WHERE Id = @Id;
+END
+ExecuteSqlStatement CREATE OR ALTER PROCEDURE sp_Usuario_Obtener
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+    BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+    FROM Usuarios WHERE Id = @Id;
+END
+ExecuteSqlStatement -- El usuario CON su PasswordHash: solo lo usa la API para verificar la contraseña (nunca sale en
+-- una respuesta). 1005 si no existe.
+CREATE OR ALTER PROCEDURE sp_Usuario_ObtenerCredenciales
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+    BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT Id, NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro
+    FROM Usuarios WHERE Id = @Id;
+END
+ExecuteSqlStatement -- Para el login: regresa el hash y la API lo verifica (el SP no puede verificar PBKDF2).
+CREATE OR ALTER PROCEDURE sp_Usuario_ObtenerPorCorreo
+    @Correo  NVARCHAR(150),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+    SELECT Id, NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro
+    FROM Usuarios WHERE Correo = LOWER(TRIM(@Correo));
+END
+ExecuteSqlStatement -- =========================================================================
+-- USUARIOS
+-- =========================================================================
+
+-- La API manda la contraseña ya hasheada (PBKDF2); el SP nunca ve el texto plano.
+CREATE OR ALTER PROCEDURE sp_Usuario_Registrar
+    @NombreCompleto NVARCHAR(150),
+    @Correo         NVARCHAR(150),
+    @PasswordHash   NVARCHAR(MAX),
+    @TipoCuenta     NVARCHAR(20),
+    @NombreSalon    NVARCHAR(150) = NULL,
+    @Codigo         INT OUTPUT,
+    @Mensaje        NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @NombreCompleto = TRIM(@NombreCompleto);
+    SET @Correo = LOWER(TRIM(@Correo));
+    SET @TipoCuenta = LOWER(TRIM(@TipoCuenta));
+    SET @NombreSalon = NULLIF(TRIM(@NombreSalon), '');
+
+    IF ISNULL(@NombreCompleto, '') = ''
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Escribe tu nombre completo.'; RETURN; END
+
+    IF ISNULL(@Correo, '') NOT LIKE '_%@_%._%'
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El formato del correo no es válido.'; RETURN; END
+
+    IF ISNULL(@TipoCuenta, '') NOT IN ('cliente', 'administrador')
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de cuenta debe ser "cliente" o "administrador".'; RETURN; END
+
+    IF @TipoCuenta = 'administrador' AND @NombreSalon IS NULL
+    BEGIN SELECT @Codigo = 1001, @Mensaje = N'Escribe el nombre de tu salón.'; RETURN; END
+
+    IF EXISTS (SELECT 1 FROM Usuarios WHERE Correo = @Correo)
+    BEGIN SELECT @Codigo = 1002, @Mensaje = N'Ya existe una cuenta con este correo.'; RETURN; END
+
+    INSERT INTO Usuarios (NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro)
+    VALUES (@NombreCompleto, @Correo, @PasswordHash, @TipoCuenta,
+            CASE WHEN @TipoCuenta = 'administrador' THEN @NombreSalon END, GETDATE());
+
+    SELECT @Codigo = 0, @Mensaje = N'Cuenta creada correctamente.';
+
+    SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+    FROM Usuarios WHERE Id = SCOPE_IDENTITY();
+END
+ExecuteSqlStatement DROP PROCEDURE IF EXISTS dbo.sp_Bitacora_RegistrarError;
+ExecuteSqlStatement DROP TABLE IF EXISTS dbo.BitacoraErrores;
+Committing Transaction
+202611251000: M014_TryCatchBitacora reverted
+Task completed.
+
+SpTotales SpConTryCatchYBitacora TablaBitacora SpBitacora
+--------- ---------------------- ------------- ----------
+       22                      0 no            no
+(1 filas)
+===== 6. reaplicar =====
+Beginning Transaction
+Rolling back transaction
+-------------------------------------------------------------------------------
+202611251000: M014_TryCatchBitacora migrating
+-------------------------------------------------------------------------------
+Beginning Transaction
+ExecuteSqlStatement /* =========================================================================
+   GlamSpaces — TRY/CATCH en todos los stored procedures y bitácora de errores (Sprint 10)
+   Correr DESPUÉS de 18_FotoSolicitudesYConversionAdmin.sql. Idempotente: la tabla y su índice
+   solo se crean si no existen y los SP van con CREATE OR ALTER. La migración M014 ejecuta este
+   mismo script.
+
+   1) Tabla BitacoraErrores: cada error de SQL que ocurre dentro de un stored procedure
+      (Fecha UTC, Procedimiento, NumeroError, Severidad, Estado, Linea, Mensaje, Usuario).
+   2) sp_Bitacora_RegistrarError: guarda el error en curso (ERROR_NUMBER(), ERROR_MESSAGE(), …).
+      Si guardarlo falla, no tapa el error original.
+   3) Los 22 SP de la API con el mismo patrón:
+          BEGIN TRY  …cuerpo de siempre…  END TRY
+          BEGIN CATCH
+              IF @@TRANCOUNT > 0 ROLLBACK;            -- primero deshacer, para que el registro no se pierda
+              EXEC dbo.sp_Bitacora_RegistrarError …;  -- guardar el error
+              THROW;                                  -- y relanzarlo: la API sigue respondiendo 5000
+          END CATCH
+      Los errores de negocio (4003, 2002, …) NO son excepciones: siguen saliendo por @Codigo y
+      @Mensaje y no se registran. Los SP que ya tenían TRY/CATCH (crear y atender solicitudes,
+      eliminar salón) conservan el suyo; el de afuera solo registra lo que ese relanza.
+      El cuerpo de cada SP es exactamente el de su script anterior (ver la lista al final).
+   ========================================================================= */
+
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+ExecuteSqlStatement IF OBJECT_ID(N'dbo.BitacoraErrores', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.BitacoraErrores (
+        Id            BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_BitacoraErrores PRIMARY KEY,
+        Fecha         DATETIME2(3)   NOT NULL CONSTRAINT DF_BitacoraErrores_Fecha DEFAULT SYSUTCDATETIME(),
+        Procedimiento NVARCHAR(128)  NULL,
+        NumeroError   INT            NOT NULL,
+        Severidad     INT            NULL,
+        Estado        INT            NULL,
+        Linea         INT            NULL,
+        Mensaje       NVARCHAR(4000) NOT NULL,
+        Usuario       NVARCHAR(128)  NOT NULL CONSTRAINT DF_BitacoraErrores_Usuario DEFAULT SUSER_SNAME()
+    );
+END
+ExecuteSqlStatement IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_BitacoraErrores_Fecha' AND object_id = OBJECT_ID(N'dbo.BitacoraErrores'))
+    CREATE INDEX IX_BitacoraErrores_Fecha ON dbo.BitacoraErrores (Fecha DESC);
+ExecuteSqlStatement -- Guarda el error que se está atendiendo. Se llama desde el CATCH de cada SP, después del ROLLBACK.
+-- @Procedimiento es el nombre del SP que falló (ERROR_PROCEDURE() también lo da, pero con un error
+-- de compilación diferida puede venir vacío).
+CREATE OR ALTER PROCEDURE dbo.sp_Bitacora_RegistrarError
+    @Procedimiento NVARCHAR(128) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        INSERT INTO dbo.BitacoraErrores (Procedimiento, NumeroError, Severidad, Estado, Linea, Mensaje)
+        VALUES (
+            COALESCE(@Procedimiento, ERROR_PROCEDURE()),
+            ISNULL(ERROR_NUMBER(), 0),
+            ERROR_SEVERITY(),
+            ERROR_STATE(),
+            ERROR_LINE(),
+            ISNULL(ERROR_MESSAGE(), N'(sin mensaje)'));
+    END TRY
+    BEGIN CATCH
+        -- Si no se pudo guardar el registro, el SP que llamó igual relanza su error original.
+        RETURN;
+    END CATCH
+END
+ExecuteSqlStatement -- Registra la URL de una foto ya subida al almacenamiento. Solo el dueño, máximo 8 fotos por salón.
+-- El salón se bloquea (UPDLOCK) mientras se cuenta: dos subidas al mismo tiempo no pasan de 8.
+-- Con error no inserta nada y el API borra el archivo que ya había subido (sin huérfanos).
+CREATE OR ALTER PROCEDURE sp_FotoSalon_Agregar
+    @SalonId INT,
+    @AdminId INT,
+    @Url     NVARCHAR(500),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET XACT_ABORT ON;
+
+        DECLARE @DuenoId INT, @Id INT;
+
+        BEGIN TRANSACTION;
+
+        SELECT @DuenoId = AdminId FROM Salones WITH (UPDLOCK, HOLDLOCK) WHERE Id = @SalonId;
+
+        IF @DuenoId IS NULL
+        BEGIN ROLLBACK; SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN ROLLBACK; SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        IF (SELECT COUNT(*) FROM FotosSalon WHERE SalonId = @SalonId) >= 8
+        BEGIN ROLLBACK; SELECT @Codigo = 2008, @Mensaje = N'El salón ya tiene 8 fotos. Elimina una para subir otra.'; RETURN; END
+
+        INSERT INTO FotosSalon (SalonId, Url) VALUES (@SalonId, @Url);
+        SET @Id = SCOPE_IDENTITY();
+
+        COMMIT;
+
+        SELECT @Codigo = 0, @Mensaje = N'Foto subida correctamente.';
+        SELECT Id, SalonId, Url FROM FotosSalon WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_FotoSalon_Agregar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Elimina una foto del salón y regresa su URL para que el API borre el archivo.
+-- @SoloValidar = 1: hace las mismas validaciones y regresa la foto SIN borrarla. El API lo usa
+-- para borrar primero el archivo: si el almacenamiento falla, el registro sigue y se puede reintentar.
+CREATE OR ALTER PROCEDURE sp_FotoSalon_Eliminar
+    @SalonId     INT,
+    @FotoId      INT,
+    @AdminId     INT,
+    @SoloValidar BIT = 0,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @SalonId);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM FotosSalon WHERE Id = @FotoId AND SalonId = @SalonId)
+        BEGIN SELECT @Codigo = 2009, @Mensaje = N'La foto no existe o no es de este salón.'; RETURN; END
+
+        SELECT Id, SalonId, Url FROM FotosSalon WHERE Id = @FotoId;
+
+        IF ISNULL(@SoloValidar, 0) = 0
+        BEGIN
+            DELETE FROM FotosSalon WHERE Id = @FotoId;
+            SELECT @Codigo = 0, @Mensaje = N'Foto eliminada correctamente.';
+        END
+        ELSE
+            SELECT @Codigo = 0, @Mensaje = N'Foto encontrada.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_FotoSalon_Eliminar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Descripcion NULL la borra.
+CREATE OR ALTER PROCEDURE sp_Paquete_Actualizar
+    @Id            INT,
+    @AdminId       INT,
+    @NombrePaquete NVARCHAR(150),
+    @Descripcion   NVARCHAR(500) = NULL,
+    @Precio        DECIMAL(10,2),
+    @Codigo        INT OUTPUT,
+    @Mensaje       NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @DuenoId INT = (
+            SELECT s.AdminId FROM Paquetes p JOIN Salones s ON s.Id = p.SalonId WHERE p.Id = @Id);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        SET @NombrePaquete = TRIM(@NombrePaquete);
+        SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+        IF ISNULL(@NombrePaquete, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del paquete es obligatorio.'; RETURN; END
+
+        IF ISNULL(@Precio, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El precio debe ser mayor a 0.'; RETURN; END
+
+        UPDATE Paquetes
+        SET NombrePaquete = @NombrePaquete, Descripcion = @Descripcion, Precio = @Precio
+        WHERE Id = @Id;
+
+        SELECT @Codigo = 0, @Mensaje = N'Paquete actualizado correctamente.';
+
+        SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+        FROM Paquetes WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Paquete_Actualizar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- =========================================================================
+-- PAQUETES
+-- =========================================================================
+CREATE OR ALTER PROCEDURE sp_Paquete_Crear
+    @SalonId       INT,
+    @AdminId       INT,
+    @NombrePaquete NVARCHAR(150),
+    @Descripcion   NVARCHAR(500) = NULL,
+    @Precio        DECIMAL(10,2),
+    @Codigo        INT OUTPUT,
+    @Mensaje       NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @SalonId);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        SET @NombrePaquete = TRIM(@NombrePaquete);
+        SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+        IF ISNULL(@NombrePaquete, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del paquete es obligatorio.'; RETURN; END
+
+        IF ISNULL(@Precio, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El precio debe ser mayor a 0.'; RETURN; END
+
+        INSERT INTO Paquetes (SalonId, NombrePaquete, Descripcion, Precio)
+        VALUES (@SalonId, @NombrePaquete, @Descripcion, @Precio);
+
+        SELECT @Codigo = 0, @Mensaje = N'Paquete agregado correctamente.';
+
+        SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+        FROM Paquetes WHERE Id = SCOPE_IDENTITY();
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Paquete_Crear';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- No deja un salón publicado sin paquetes.
+CREATE OR ALTER PROCEDURE sp_Paquete_Eliminar
+    @Id      INT,
+    @AdminId INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @SalonId INT, @DuenoId INT, @Estado NVARCHAR(20);
+        SELECT @SalonId = s.Id, @DuenoId = s.AdminId, @Estado = s.Estado
+        FROM Paquetes p JOIN Salones s ON s.Id = p.SalonId
+        WHERE p.Id = @Id;
+
+        IF @SalonId IS NULL
+        BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        IF @Estado = 'publicado' AND (SELECT COUNT(*) FROM Paquetes WHERE SalonId = @SalonId) <= 1
+        BEGIN SELECT @Codigo = 3002, @Mensaje = N'Un salón publicado debe tener al menos un paquete. Despublícalo antes de borrar el último.'; RETURN; END
+
+        DELETE FROM Paquetes WHERE Id = @Id;
+
+        SELECT @Codigo = 0, @Mensaje = N'Paquete eliminado correctamente.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Paquete_Eliminar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Si @Estado viene NULL se conserva el actual. Descripcion NULL la borra.
+CREATE OR ALTER PROCEDURE sp_Salon_Actualizar
+    @Id          INT,
+    @AdminId     INT,
+    @Nombre      NVARCHAR(150),
+    @Zona        NVARCHAR(200),
+    @Capacidad   INT,
+    @Descripcion NVARCHAR(1000) = NULL,
+    @Estado      NVARCHAR(20) = NULL,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @DuenoId INT, @EstadoActual NVARCHAR(20);
+        SELECT @DuenoId = AdminId, @EstadoActual = Estado FROM Salones WHERE Id = @Id;
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> ISNULL(@AdminId, 0)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'Solo el administrador dueño del salón puede modificarlo.'; RETURN; END
+
+        SET @Nombre = TRIM(@Nombre);
+        SET @Zona = TRIM(@Zona);
+        SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+        SET @Estado = ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), @EstadoActual);
+
+        IF ISNULL(@Nombre, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del salón es obligatorio.'; RETURN; END
+
+        IF ISNULL(@Zona, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La zona es obligatoria.'; RETURN; END
+
+        IF ISNULL(@Capacidad, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La capacidad debe ser mayor a 0.'; RETURN; END
+
+        IF @Estado NOT IN ('publicado', 'no_publicado')
+        BEGIN SELECT @Codigo = 2004, @Mensaje = N'El estado debe ser "publicado" o "no_publicado".'; RETURN; END
+
+        IF @Estado = 'publicado' AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE SalonId = @Id)
+        BEGIN SELECT @Codigo = 2003, @Mensaje = N'Para publicar el salón se requiere al menos un paquete.'; RETURN; END
+
+        UPDATE Salones
+        SET Nombre = @Nombre, Zona = @Zona, Capacidad = @Capacidad,
+            Descripcion = @Descripcion, Estado = @Estado
+        WHERE Id = @Id;
+
+        SELECT @Codigo = 0, @Mensaje = N'Salón actualizado correctamente.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Actualizar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Búsqueda pública: solo salones publicados. Todos los filtros son opcionales y combinables;
+-- NULL, vacío o <= 0 significa "sin filtro". Nunca regresa error: sin resultados es éxito con lista vacía.
+-- Zona: coincidencia parcial sin importar mayúsculas ni acentos ("rio" encuentra "Tepeji del Río").
+-- PrecioMaximo: el salón entra si su paquete más barato (PrecioDesde) cuesta eso o menos.
+-- Result sets: 1) datos del paginado, 2) salones de la página, 3) hasta 5 fotos por salón de la página
+-- (SalonId, Url) en orden de Id de foto.
+CREATE OR ALTER PROCEDURE sp_Salon_Buscar
+    @Zona            NVARCHAR(200) = NULL,
+    @CapacidadMinima INT = NULL,
+    @PrecioMaximo    DECIMAL(10,2) = NULL,
+    @Pagina          INT = 1,
+    @TamanoPagina    INT = 10,
+    @Codigo          INT OUTPUT,
+    @Mensaje         NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+        SET @TamanoPagina = CASE
+            WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+            WHEN @TamanoPagina > 100 THEN 100
+            ELSE @TamanoPagina END;
+        SET @Zona = NULLIF(TRIM(@Zona), '');
+        IF @CapacidadMinima <= 0 SET @CapacidadMinima = NULL;
+        IF @PrecioMaximo <= 0 SET @PrecioMaximo = NULL;
+
+        SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, p.PrecioDesde,
+               (SELECT TOP 1 f.Url FROM FotosSalon f WHERE f.SalonId = s.Id ORDER BY f.Id) AS FotoPrincipal
+        INTO #Resultados
+        FROM Salones s
+        CROSS APPLY (SELECT MIN(Precio) AS PrecioDesde FROM Paquetes WHERE SalonId = s.Id) p
+        WHERE s.Estado = 'publicado'
+          AND p.PrecioDesde IS NOT NULL
+          AND (@Zona IS NULL
+               OR s.Zona COLLATE Latin1_General_CI_AI LIKE N'%' + @Zona + N'%' COLLATE Latin1_General_CI_AI)
+          AND (@CapacidadMinima IS NULL OR s.Capacidad >= @CapacidadMinima)
+          AND (@PrecioMaximo IS NULL OR p.PrecioDesde <= @PrecioMaximo)
+        -- Con filtros opcionales, RECOMPILE arma el plan con los valores reales de cada búsqueda
+        -- para que SQL Server sí use los índices de 03_Indices.sql.
+        OPTION (RECOMPILE);
+
+        DECLARE @Total INT = (SELECT COUNT(*) FROM #Resultados);
+
+        -- La página se guarda una vez para usarla en el result set 2 y en el 3 con el mismo orden.
+        SELECT Id, Nombre, Zona, Capacidad, PrecioDesde, FotoPrincipal
+        INTO #Pagina
+        FROM #Resultados
+        ORDER BY PrecioDesde, Id
+        OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+        FETCH NEXT @TamanoPagina ROWS ONLY;
+
+        SELECT @Codigo = 0,
+               @Mensaje = CASE WHEN @Total = 0 THEN N'No se encontraron salones con esos filtros.'
+                               ELSE N'Consulta exitosa.' END;
+
+        SELECT @Total AS TotalRegistros,
+               (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+               @Pagina AS Pagina,
+               @TamanoPagina AS TamanoPagina;
+
+        SELECT Id, Nombre, Zona, Capacidad, PrecioDesde, FotoPrincipal
+        FROM #Pagina
+        ORDER BY PrecioDesde, Id;
+
+        SELECT x.SalonId, x.Url
+        FROM (SELECT f.SalonId, f.Url,
+                     ROW_NUMBER() OVER (PARTITION BY f.SalonId ORDER BY f.Id) AS Orden
+              FROM FotosSalon f
+              INNER JOIN #Pagina pg ON pg.Id = f.SalonId) x
+        WHERE x.Orden <= 5
+        ORDER BY x.SalonId, x.Orden;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Buscar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- =========================================================================
+-- SALONES
+-- =========================================================================
+CREATE OR ALTER PROCEDURE sp_Salon_Crear
+    @AdminId     INT,
+    @Nombre      NVARCHAR(150),
+    @Zona        NVARCHAR(200),
+    @Capacidad   INT,
+    @Descripcion NVARCHAR(1000) = NULL,
+    @Codigo      INT OUTPUT,
+    @Mensaje     NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Nombre = TRIM(@Nombre);
+        SET @Zona = TRIM(@Zona);
+        SET @Descripcion = NULLIF(TRIM(@Descripcion), '');
+
+        IF ISNULL(@Nombre, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El nombre del salón es obligatorio.'; RETURN; END
+
+        IF ISNULL(@Zona, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La zona es obligatoria.'; RETURN; END
+
+        IF ISNULL(@Capacidad, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La capacidad debe ser mayor a 0.'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+        BEGIN SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.'; RETURN; END
+
+        -- Siempre nace "no_publicado": todavía no tiene paquetes.
+        INSERT INTO Salones (AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion)
+        VALUES (@AdminId, @Nombre, @Zona, @Capacidad, @Descripcion, 'no_publicado', GETDATE());
+
+        SELECT @Codigo = 0, @Mensaje = N'Salón creado correctamente.';
+
+        SELECT Id, AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion
+        FROM Salones WHERE Id = SCOPE_IDENTITY();
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Crear';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 2) Disponibilidad: reservaciones confirmadas + solicitudes confirmadas
+-- -------------------------------------------------------------------------
+-- Regresa las fechas ocupadas del mes. Mes fuera de 1–12 o año fuera de 2000–2100 → 1001;
+-- salón inexistente → 2001; mes sin ocupadas = éxito con lista vacía.
+CREATE OR ALTER PROCEDURE sp_Salon_Disponibilidad
+    @SalonId INT,
+    @Anio    INT,
+    @Mes     INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        IF ISNULL(@Mes, 0) NOT BETWEEN 1 AND 12 OR ISNULL(@Anio, 0) NOT BETWEEN 2000 AND 2100
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'Mes o año inválido.'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        DECLARE @Inicio DATE = DATEFROMPARTS(@Anio, @Mes, 1);
+        DECLARE @Fin DATE = DATEADD(MONTH, 1, @Inicio);
+
+        -- UNION quita repetidos: una fecha aparece una vez aunque esté en las dos tablas.
+        SELECT FechaEvento
+        INTO #Fechas
+        FROM (
+            SELECT FechaEvento FROM Reservaciones
+            WHERE SalonId = @SalonId AND Estado = 'confirmada' AND FechaEvento >= @Inicio AND FechaEvento < @Fin
+            UNION
+            SELECT FechaEvento FROM Solicitudes
+            WHERE SalonId = @SalonId AND Estado = 'confirmada' AND FechaEvento >= @Inicio AND FechaEvento < @Fin
+        ) ocupadas;
+
+        SELECT @Codigo = 0,
+               @Mensaje = CASE WHEN NOT EXISTS (SELECT 1 FROM #Fechas)
+                               THEN N'El salón no tiene fechas ocupadas en ese mes.'
+                               ELSE N'Consulta exitosa.' END;
+
+        SELECT FechaEvento FROM #Fechas ORDER BY FechaEvento;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Disponibilidad';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Elimina el salón con sus fotos (registros), paquetes, favoritas, solicitudes rechazadas y
+-- reservaciones no confirmadas. Solo el dueño. No se elimina si hay algo por atender o ya
+-- confirmado: primero hay que resolverlo.
+CREATE OR ALTER PROCEDURE sp_Salon_Eliminar
+    @Id      INT,
+    @AdminId INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET XACT_ABORT ON;
+
+        DECLARE @DuenoId INT = (SELECT AdminId FROM Salones WHERE Id = @Id);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.'; RETURN; END
+
+        IF @DuenoId <> @AdminId
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño de este salón.'; RETURN; END
+
+        BEGIN TRY
+            BEGIN TRAN;
+
+            -- UPDLOCK + HOLDLOCK: si al mismo tiempo llega una solicitud o se confirma una, una
+            -- operación espera a la otra (no se borra un salón con algo recién confirmado).
+            IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                       WHERE SalonId = @Id AND Estado IN ('pendiente', 'confirmada'))
+               OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                          WHERE SalonId = @Id AND Estado = 'confirmada')
+            BEGIN
+                ROLLBACK;
+                SELECT @Codigo = 2010, @Mensaje = N'Tiene solicitudes pendientes o confirmadas; resuélvelas antes de eliminar el salón.';
+                RETURN;
+            END
+
+            DELETE FROM Solicitudes        WHERE SalonId = @Id; -- solo quedan rechazadas
+            DELETE FROM Reservaciones      WHERE SalonId = @Id; -- solo quedan pendientes o canceladas
+            DELETE FROM FotosSalon         WHERE SalonId = @Id;
+            DELETE FROM Paquetes           WHERE SalonId = @Id;
+            DELETE FROM BusquedasFavoritas WHERE SalonId = @Id;
+            DELETE FROM Salones            WHERE Id = @Id;
+
+            COMMIT;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK;
+            -- Este CATCH responde 5000 sin relanzar: el error se registra aquí mismo.
+            EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Eliminar';
+            SELECT @Codigo = 5000, @Mensaje = N'No se pudo eliminar el salón. Intenta de nuevo más tarde.';
+            RETURN;
+        END CATCH
+
+        SELECT @Codigo = 0, @Mensaje = N'Salón eliminado correctamente.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Eliminar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Paginado: primer result set = datos del paginado, segundo = registros de la página.
+-- @AdminId NULL lista todos. @Pagina < 1 se toma como 1; @TamanoPagina va de 1 a 100.
+-- FotoPrincipal = la primera foto del salón (por Id, igual que la búsqueda); NULL si no tiene.
+CREATE OR ALTER PROCEDURE sp_Salon_Listar
+    @AdminId      INT = NULL,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+        SET @TamanoPagina = CASE
+            WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+            WHEN @TamanoPagina > 100 THEN 100
+            ELSE @TamanoPagina END;
+
+        DECLARE @Total INT = (SELECT COUNT(*) FROM Salones WHERE @AdminId IS NULL OR AdminId = @AdminId);
+
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT @Total AS TotalRegistros,
+               (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+               @Pagina AS Pagina,
+               @TamanoPagina AS TamanoPagina;
+
+        SELECT s.Id, s.Nombre, s.Zona, s.Capacidad, s.Estado,
+               (SELECT COUNT(*) FROM Paquetes p WHERE p.SalonId = s.Id) AS TotalPaquetes,
+               (SELECT TOP 1 f.Url FROM FotosSalon f WHERE f.SalonId = s.Id ORDER BY f.Id) AS FotoPrincipal,
+               (SELECT COUNT(*) FROM FotosSalon f WHERE f.SalonId = s.Id) AS TotalFotos
+        FROM Salones s
+        WHERE @AdminId IS NULL OR s.AdminId = @AdminId
+        ORDER BY s.Id DESC
+        OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+        FETCH NEXT @TamanoPagina ROWS ONLY;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Listar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Regresa SIEMPRE 3 result sets (salón, paquetes, fotos), vacíos si el salón no existe,
+-- para que la API los pueda leer en orden.
+CREATE OR ALTER PROCEDURE sp_Salon_Obtener
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        IF EXISTS (SELECT 1 FROM Salones WHERE Id = @Id)
+            SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+        ELSE
+            SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.';
+
+        SELECT Id, AdminId, Nombre, Zona, Capacidad, Descripcion, Estado, FechaCreacion
+        FROM Salones WHERE Id = @Id;
+
+        SELECT Id, SalonId, NombrePaquete, Descripcion, Precio
+        FROM Paquetes WHERE SalonId = @Id ORDER BY Id;
+
+        SELECT Id, SalonId, Url
+        FROM FotosSalon WHERE SalonId = @Id ORDER BY Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Salon_Obtener';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 4) Confirmar o rechazar una solicitud (lo expone la HU-18)
+-- -------------------------------------------------------------------------
+-- @Estado: 'confirmada' o 'rechazada'. Solo el administrador dueño del salón y solo si sigue 'pendiente'.
+--  - Confirmar: en una transacción la confirma y rechaza las demás pendientes del mismo salón y fecha.
+--    Si la fecha ya está ocupada (solicitud o reservación confirmada) → 4002 y no cambia nada.
+--  - Rechazar: solo cambia esa solicitud; la fecha sigue disponible.
+-- Regresa la solicitud con su nuevo estado y cuántas pendientes se rechazaron automáticamente.
+CREATE OR ALTER PROCEDURE sp_Solicitud_CambiarEstado
+    @Id      INT,
+    @AdminId INT,
+    @Estado  NVARCHAR(20),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET XACT_ABORT ON;
+
+        SET @Estado = LOWER(TRIM(@Estado));
+
+        IF @Estado IS NULL OR @Estado NOT IN ('confirmada', 'rechazada')
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El estado debe ser "confirmada" o "rechazada".'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+        BEGIN SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.'; RETURN; END
+
+        DECLARE @SalonId INT, @FechaEvento DATE, @EstadoActual NVARCHAR(20);
+        SELECT @SalonId = SalonId, @FechaEvento = FechaEvento, @EstadoActual = Estado
+        FROM Solicitudes WHERE Id = @Id;
+
+        IF @SalonId IS NULL
+        BEGIN SELECT @Codigo = 4001, @Mensaje = N'La solicitud no existe.'; RETURN; END
+
+        IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId AND AdminId = @AdminId)
+        BEGIN SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño del salón de esta solicitud.'; RETURN; END
+
+        IF @EstadoActual <> 'pendiente'
+        BEGIN SELECT @Codigo = 4006, @Mensaje = N'La solicitud ya fue atendida.'; RETURN; END
+
+        DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+        IF @Estado = 'confirmada' AND @FechaEvento < @Hoy
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'No se puede confirmar: la fecha del evento ya pasó.'; RETURN; END
+
+        DECLARE @Rechazadas INT = 0;
+
+        BEGIN TRY
+            BEGIN TRAN;
+
+            -- Se vuelve a revisar con bloqueo: otra petición pudo atenderla entre la validación y aquí.
+            IF NOT EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id AND Estado = 'pendiente')
+            BEGIN
+                ROLLBACK;
+                SELECT @Codigo = 4006, @Mensaje = N'La solicitud ya fue atendida.';
+                RETURN;
+            END
+
+            IF @Estado = 'confirmada'
+            BEGIN
+                -- UPDLOCK + HOLDLOCK: mientras dura la transacción nadie más confirma ni crea en ese salón y fecha.
+                IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                           WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+                   OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                              WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+                BEGIN
+                    ROLLBACK;
+                    SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+                    RETURN;
+                END
+
+                UPDATE Solicitudes SET Estado = 'confirmada' WHERE Id = @Id;
+
+                -- Bloqueo de fecha: las demás pendientes de ese salón y día ya no pueden atenderse.
+                UPDATE Solicitudes SET Estado = 'rechazada'
+                WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'pendiente' AND Id <> @Id;
+
+                SET @Rechazadas = @@ROWCOUNT;
+            END
+            ELSE
+                UPDATE Solicitudes SET Estado = 'rechazada' WHERE Id = @Id;
+
+            COMMIT;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK;
+
+            -- UX_Solicitudes_Confirmada: otra confirmación del mismo salón y fecha ganó la carrera.
+            IF ERROR_NUMBER() IN (2601, 2627)
+            BEGIN SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.'; RETURN; END;
+
+            THROW;
+        END CATCH
+
+        SELECT @Codigo = 0,
+               @Mensaje = CASE WHEN @Estado = 'confirmada'
+                               THEN CONCAT(N'Solicitud confirmada. Se rechazaron ', @Rechazadas,
+                                           N' solicitud(es) pendiente(s) de esa fecha.')
+                               ELSE N'Solicitud rechazada.' END;
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion, @Rechazadas AS SolicitudesRechazadas
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        WHERE s.Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_CambiarEstado';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- -------------------------------------------------------------------------
+-- 3) Crear solicitud: la fecha ocupada también cuenta las reservaciones confirmadas
+-- -------------------------------------------------------------------------
+-- Igual que en 08_SolicitudesHU15.sql; solo cambia la revisión de fecha ocupada (paso 5).
+CREATE OR ALTER PROCEDURE sp_Solicitud_Crear
+    @ClienteId        INT,
+    @SalonId          INT,
+    @PaqueteId        INT = NULL,
+    @FechaEvento      DATE,
+    @TipoEvento       NVARCHAR(100),
+    @NumeroInvitados  INT,
+    @TelefonoContacto NVARCHAR(20),
+    @Comentarios      NVARCHAR(500) = NULL,
+    @Codigo           INT OUTPUT,
+    @Mensaje          NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET XACT_ABORT ON;
+
+        DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+        IF @TipoCuenta IS NULL
+        BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+        IF @TipoCuenta <> 'cliente'
+        BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden enviar solicitudes.'; RETURN; END
+
+        DECLARE @Capacidad INT = (SELECT Capacidad FROM Salones WHERE Id = @SalonId AND Estado = 'publicado');
+
+        IF @Capacidad IS NULL
+        BEGIN SELECT @Codigo = 2001, @Mensaje = N'El salón no existe o no está publicado.'; RETURN; END
+
+        IF @PaqueteId IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM Paquetes WHERE Id = @PaqueteId AND SalonId = @SalonId)
+        BEGIN SELECT @Codigo = 3001, @Mensaje = N'El paquete no existe o no es de ese salón.'; RETURN; END
+
+        SET @TipoEvento = TRIM(@TipoEvento);
+        SET @TelefonoContacto = TRIM(@TelefonoContacto);
+        SET @Comentarios = NULLIF(TRIM(@Comentarios), '');
+
+        -- "Hoy" en la hora del centro de México: la BD corre en UTC y de noche ya sería mañana.
+        DECLARE @Hoy DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Central Standard Time (Mexico)' AS DATE);
+
+        IF ISNULL(@TipoEvento, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de evento es obligatorio.'; RETURN; END
+
+        IF ISNULL(@TelefonoContacto, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El teléfono de contacto es obligatorio.'; RETURN; END
+
+        IF @FechaEvento IS NULL OR @FechaEvento < @Hoy
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'La fecha del evento no puede ser una fecha pasada.'; RETURN; END
+
+        IF ISNULL(@NumeroInvitados, 0) <= 0
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El número de invitados debe ser mayor a 0.'; RETURN; END
+
+        IF @NumeroInvitados > @Capacidad
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'Los invitados exceden la capacidad del salón.'; RETURN; END
+
+        DECLARE @Id INT;
+
+        BEGIN TRY
+            BEGIN TRAN;
+
+            -- UPDLOCK + HOLDLOCK bloquean el salón y la fecha hasta el COMMIT: si al mismo tiempo
+            -- se confirma una solicitud de ese día, una operación espera a la otra.
+            -- Ocupada = solicitud confirmada (HU-17) o reservación confirmada (HU-11).
+            IF EXISTS (SELECT 1 FROM Solicitudes WITH (UPDLOCK, HOLDLOCK)
+                       WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+               OR EXISTS (SELECT 1 FROM Reservaciones WITH (UPDLOCK, HOLDLOCK)
+                          WHERE SalonId = @SalonId AND FechaEvento = @FechaEvento AND Estado = 'confirmada')
+            BEGIN
+                ROLLBACK;
+                SELECT @Codigo = 4002, @Mensaje = N'La fecha ya no está disponible.';
+                RETURN;
+            END
+
+            -- Estado y FechaCreacion explícitos para no depender de los DEFAULT.
+            INSERT INTO Solicitudes (SalonId, ClienteId, PaqueteId, FechaEvento, TipoEvento, NumeroInvitados,
+                                     Comentarios, Estado, FechaCreacion, TelefonoContacto)
+            VALUES (@SalonId, @ClienteId, @PaqueteId, @FechaEvento, @TipoEvento, @NumeroInvitados,
+                    @Comentarios, 'pendiente', SYSUTCDATETIME(), @TelefonoContacto);
+
+            SET @Id = SCOPE_IDENTITY();
+
+            COMMIT;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK;
+
+            -- UX_Solicitudes_Cliente_Salon_Fecha_Pendiente rechaza una segunda solicitud pendiente
+            -- del mismo cliente, salón y fecha (también si llegan dos al mismo tiempo).
+            IF ERROR_NUMBER() IN (2601, 2627)
+            BEGIN SELECT @Codigo = 4004, @Mensaje = N'Ya tienes una solicitud pendiente para ese salón y fecha.'; RETURN; END;
+
+            THROW;
+        END CATCH
+
+        SELECT @Codigo = 0, @Mensaje = N'Solicitud enviada correctamente.';
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        WHERE s.Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_Crear';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Solicitudes del cliente paginadas, de la más reciente a la más antigua.
+-- Sin solicitudes NO es error: éxito con lista vacía.
+-- Siempre regresa los 2 result sets (paginado y página), también con error, igual que
+-- sp_Salon_Listar; con error la página va vacía y el paginado en 0.
+-- FotoPrincipal = la primera foto del salón (por Id); NULL si no tiene.
+CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorCliente
+    @ClienteId    INT,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+        SET @TamanoPagina = CASE
+            WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+            WHEN @TamanoPagina > 100 THEN 100
+            ELSE @TamanoPagina END;
+
+        DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+        DECLARE @Total INT = 0;
+
+        IF @TipoCuenta IS NULL
+            SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.';
+        ELSE IF @TipoCuenta <> 'cliente'
+            SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden consultar solicitudes.';
+        ELSE
+        BEGIN
+            SET @Total = (SELECT COUNT(*) FROM Solicitudes WHERE ClienteId = @ClienteId);
+            SELECT @Codigo = 0,
+                   @Mensaje = CASE WHEN @Total = 0 THEN N'No tienes solicitudes registradas.'
+                                   ELSE N'Consulta exitosa.' END;
+        END
+
+        SELECT @Total AS TotalRegistros,
+               (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+               @Pagina AS Pagina,
+               @TamanoPagina AS TamanoPagina;
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion, f.Url AS FotoPrincipal
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        OUTER APPLY (SELECT TOP 1 fs.Url FROM FotosSalon fs WHERE fs.SalonId = s.SalonId ORDER BY fs.Id) f
+        WHERE s.ClienteId = @ClienteId AND @Codigo = 0
+        ORDER BY s.FechaCreacion DESC, s.Id DESC
+        OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+        FETCH NEXT @TamanoPagina ROWS ONLY;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_ListarPorCliente';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Solicitudes de UN salón, solo para el administrador dueño, ordenadas por fecha del evento
+-- (las más próximas primero). @Estado: 'pendiente' (por defecto), 'confirmada', 'rechazada' o 'todas'.
+-- Incluye el nombre del cliente y el precio del paquete para el panel del administrador (HU-19).
+-- Siempre regresa los 2 result sets (paginado y página), como sp_Solicitud_ListarPorCliente;
+-- con error, la página va vacía y el paginado en 0. FotoPrincipal: primera foto del salón o NULL.
+CREATE OR ALTER PROCEDURE sp_Solicitud_ListarPorSalon
+    @SalonId      INT,
+    @AdminId      INT,
+    @Estado       NVARCHAR(20) = NULL,
+    @Pagina       INT = 1,
+    @TamanoPagina INT = 10,
+    @Codigo       INT OUTPUT,
+    @Mensaje      NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @Pagina = CASE WHEN ISNULL(@Pagina, 0) < 1 THEN 1 ELSE @Pagina END;
+        SET @TamanoPagina = CASE
+            WHEN ISNULL(@TamanoPagina, 0) < 1 THEN 10
+            WHEN @TamanoPagina > 100 THEN 100
+            ELSE @TamanoPagina END;
+        SET @Estado = ISNULL(NULLIF(LOWER(TRIM(@Estado)), ''), 'pendiente');
+
+        DECLARE @Total INT = 0;
+        SET @Codigo = 0;
+
+        IF @Estado NOT IN ('pendiente', 'confirmada', 'rechazada', 'todas')
+            SELECT @Codigo = 1001, @Mensaje = N'El estado debe ser pendiente, confirmada, rechazada o todas.';
+        ELSE IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @AdminId AND TipoCuenta = 'administrador')
+            SELECT @Codigo = 1004, @Mensaje = N'El usuario no existe o no es administrador.';
+        ELSE IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId)
+            SELECT @Codigo = 2001, @Mensaje = N'El salón no existe.';
+        ELSE IF NOT EXISTS (SELECT 1 FROM Salones WHERE Id = @SalonId AND AdminId = @AdminId)
+            SELECT @Codigo = 2002, @Mensaje = N'No eres el dueño de este salón.';
+        ELSE
+        BEGIN
+            SET @Total = (SELECT COUNT(*) FROM Solicitudes
+                          WHERE SalonId = @SalonId AND (@Estado = 'todas' OR Estado = @Estado));
+            SELECT @Mensaje = CASE WHEN @Total = 0 THEN N'El salón no tiene solicitudes con ese estado.'
+                                   ELSE N'Consulta exitosa.' END;
+        END
+
+        SELECT @Total AS TotalRegistros,
+               (@Total + @TamanoPagina - 1) / @TamanoPagina AS TotalPaginas,
+               @Pagina AS Pagina,
+               @TamanoPagina AS TamanoPagina;
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, u.NombreCompleto AS NombreCliente,
+               s.PaqueteId, p.NombrePaquete, p.Precio AS PrecioPaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion, f.Url AS FotoPrincipal
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        JOIN Usuarios u ON u.Id = s.ClienteId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        OUTER APPLY (SELECT TOP 1 fs.Url FROM FotosSalon fs WHERE fs.SalonId = s.SalonId ORDER BY fs.Id) f
+        WHERE s.SalonId = @SalonId AND @Codigo = 0
+          AND (@Estado = 'todas' OR s.Estado = @Estado)
+        ORDER BY s.FechaEvento, s.Id
+        OFFSET (@Pagina - 1) * @TamanoPagina ROWS
+        FETCH NEXT @TamanoPagina ROWS ONLY;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_ListarPorSalon';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Datos y estado actual de una solicitud, con el nombre del salón y del paquete.
+-- Solo el cliente que la creó puede consultarla.
+CREATE OR ALTER PROCEDURE sp_Solicitud_Obtener
+    @Id        INT,
+    @ClienteId INT,
+    @Codigo    INT OUTPUT,
+    @Mensaje   NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        DECLARE @TipoCuenta NVARCHAR(20) = (SELECT TipoCuenta FROM Usuarios WHERE Id = @ClienteId);
+
+        IF @TipoCuenta IS NULL
+        BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+        IF @TipoCuenta <> 'cliente'
+        BEGIN SELECT @Codigo = 4003, @Mensaje = N'Solo los clientes pueden consultar solicitudes.'; RETURN; END
+
+        DECLARE @DuenoId INT = (SELECT ClienteId FROM Solicitudes WHERE Id = @Id);
+
+        IF @DuenoId IS NULL
+        BEGIN SELECT @Codigo = 4001, @Mensaje = N'La solicitud no existe.'; RETURN; END
+
+        IF @DuenoId <> @ClienteId
+        BEGIN SELECT @Codigo = 4005, @Mensaje = N'No tienes acceso a esta solicitud.'; RETURN; END
+
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT s.Id, s.SalonId, sa.Nombre AS NombreSalon, s.ClienteId, s.PaqueteId, p.NombrePaquete,
+               s.FechaEvento, s.TipoEvento, s.NumeroInvitados, s.TelefonoContacto, s.Comentarios,
+               s.Estado, s.FechaCreacion
+        FROM Solicitudes s
+        JOIN Salones sa ON sa.Id = s.SalonId
+        LEFT JOIN Paquetes p ON p.Id = s.PaqueteId
+        WHERE s.Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Solicitud_Obtener';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Convierte una cuenta de cliente en administrador. La API verifica la contraseña ANTES.
+-- El UPDATE exige TipoCuenta = 'cliente': si dos peticiones llegan a la vez, solo una convierte.
+-- Correo, contraseña, solicitudes y reservaciones no cambian. NombreSalon queda como estaba (NULL).
+CREATE OR ALTER PROCEDURE sp_Usuario_ConvertirAAdministrador
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        UPDATE Usuarios SET TipoCuenta = 'administrador' WHERE Id = @Id AND TipoCuenta = 'cliente';
+
+        IF @@ROWCOUNT = 0
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+                SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.';
+            ELSE
+                SELECT @Codigo = 1006, @Mensaje = N'La cuenta ya es de administrador.';
+            RETURN;
+        END
+
+        SELECT @Codigo = 0, @Mensaje = N'Tu cuenta ahora es de administrador.';
+
+        SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_ConvertirAAdministrador';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement CREATE OR ALTER PROCEDURE sp_Usuario_Obtener
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+        BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_Obtener';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- El usuario CON su PasswordHash: solo lo usa la API para verificar la contraseña (nunca sale en
+-- una respuesta). 1005 si no existe.
+CREATE OR ALTER PROCEDURE sp_Usuario_ObtenerCredenciales
+    @Id      INT,
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        IF NOT EXISTS (SELECT 1 FROM Usuarios WHERE Id = @Id)
+        BEGIN SELECT @Codigo = 1005, @Mensaje = N'El usuario no existe.'; RETURN; END
+
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT Id, NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Id = @Id;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_ObtenerCredenciales';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- Para el login: regresa el hash y la API lo verifica (el SP no puede verificar PBKDF2).
+CREATE OR ALTER PROCEDURE sp_Usuario_ObtenerPorCorreo
+    @Correo  NVARCHAR(150),
+    @Codigo  INT OUTPUT,
+    @Mensaje NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SELECT @Codigo = 0, @Mensaje = N'Consulta exitosa.';
+
+        SELECT Id, NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Correo = LOWER(TRIM(@Correo));
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_ObtenerPorCorreo';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement -- =========================================================================
+-- USUARIOS
+-- =========================================================================
+-- La API manda la contraseña ya hasheada (PBKDF2); el SP nunca ve el texto plano.
+CREATE OR ALTER PROCEDURE sp_Usuario_Registrar
+    @NombreCompleto NVARCHAR(150),
+    @Correo         NVARCHAR(150),
+    @PasswordHash   NVARCHAR(MAX),
+    @TipoCuenta     NVARCHAR(20),
+    @NombreSalon    NVARCHAR(150) = NULL,
+    @Codigo         INT OUTPUT,
+    @Mensaje        NVARCHAR(200) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        SET @NombreCompleto = TRIM(@NombreCompleto);
+        SET @Correo = LOWER(TRIM(@Correo));
+        SET @TipoCuenta = LOWER(TRIM(@TipoCuenta));
+        SET @NombreSalon = NULLIF(TRIM(@NombreSalon), '');
+
+        IF ISNULL(@NombreCompleto, '') = ''
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'Escribe tu nombre completo.'; RETURN; END
+
+        IF ISNULL(@Correo, '') NOT LIKE '_%@_%._%'
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El formato del correo no es válido.'; RETURN; END
+
+        IF ISNULL(@TipoCuenta, '') NOT IN ('cliente', 'administrador')
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'El tipo de cuenta debe ser "cliente" o "administrador".'; RETURN; END
+
+        IF @TipoCuenta = 'administrador' AND @NombreSalon IS NULL
+        BEGIN SELECT @Codigo = 1001, @Mensaje = N'Escribe el nombre de tu salón.'; RETURN; END
+
+        IF EXISTS (SELECT 1 FROM Usuarios WHERE Correo = @Correo)
+        BEGIN SELECT @Codigo = 1002, @Mensaje = N'Ya existe una cuenta con este correo.'; RETURN; END
+
+        INSERT INTO Usuarios (NombreCompleto, Correo, PasswordHash, TipoCuenta, NombreSalon, FechaRegistro)
+        VALUES (@NombreCompleto, @Correo, @PasswordHash, @TipoCuenta,
+                CASE WHEN @TipoCuenta = 'administrador' THEN @NombreSalon END, GETDATE());
+
+        SELECT @Codigo = 0, @Mensaje = N'Cuenta creada correctamente.';
+
+        SELECT Id, NombreCompleto, Correo, TipoCuenta, NombreSalon, FechaRegistro
+        FROM Usuarios WHERE Id = SCOPE_IDENTITY();
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'sp_Usuario_Registrar';
+        THROW;
+    END CATCH
+END
+ExecuteSqlStatement /* Versión anterior de cada SP (de ahí sale el cuerpo; la migración M014 la restaura en Down):
+     sp_FotoSalon_Agregar                 12_FotosSalonHU07.sql
+     sp_FotoSalon_Eliminar                12_FotosSalonHU07.sql
+     sp_Paquete_Actualizar                02_StoredProcedures.sql
+     sp_Paquete_Crear                     02_StoredProcedures.sql
+     sp_Paquete_Eliminar                  02_StoredProcedures.sql
+     sp_Salon_Actualizar                  02_StoredProcedures.sql
+     sp_Salon_Buscar                      13_FotosPreviewBuscar.sql
+     sp_Salon_Crear                       02_StoredProcedures.sql
+     sp_Salon_Disponibilidad              09_EstadoSolicitudesHU17.sql
+     sp_Salon_Eliminar                    14_MisSalonesAdmin.sql
+     sp_Salon_Listar                      14_MisSalonesAdmin.sql
+     sp_Salon_Obtener                     02_StoredProcedures.sql
+     sp_Solicitud_CambiarEstado           09_EstadoSolicitudesHU17.sql
+     sp_Solicitud_Crear                   09_EstadoSolicitudesHU17.sql
+     sp_Solicitud_ListarPorCliente        18_FotoSolicitudesYConversionAdmin.sql
+     sp_Solicitud_ListarPorSalon          18_FotoSolicitudesYConversionAdmin.sql
+     sp_Solicitud_Obtener                 08_SolicitudesHU15.sql
+     sp_Usuario_ConvertirAAdministrador   18_FotoSolicitudesYConversionAdmin.sql
+     sp_Usuario_Obtener                   02_StoredProcedures.sql
+     sp_Usuario_ObtenerCredenciales       18_FotoSolicitudesYConversionAdmin.sql
+     sp_Usuario_ObtenerPorCorreo          02_StoredProcedures.sql
+     sp_Usuario_Registrar                 02_StoredProcedures.sql
+*/
+Committing Transaction
+202611251000: M014_TryCatchBitacora migrated
+Task completed.
+-------------------------------------------------------------------------------
+Migrations
+-------------------------------------------------------------------------------
+202610230900: M001_LineaBase
+202610230910: M002_CrearTablaBusquedasFavoritas
+202610230920: M003_AgregarColumnaTelefonoSalones
+202610230930: M004_IndiceUnicoBusquedasFavoritas
+202610291000: M005_CrearSolicitudes
+202610291100: M006_AgregarTelefonoContactoSolicitudes
+202610291200: M007_ProcedimientosSolicitudes
+202611051000: M008_EstadoSolicitudesHU17
+202611051100: M009_SolicitudesAdminHU18
+202611121000: M010_FotosSalonHU07
+202611131000: M011_FotosPreviewBuscar
+202611141000: M012_MisSalonesAdmin
+202611151000: M013_FotoSolicitudesYConversionAdmin
+⌘ 202611251000: M014_TryCatchBitacora (current)
+Task completed.
+
+SpTotales SpConTryCatchYBitacora TablaBitacora SpBitacora
+--------- ---------------------- ------------- ----------
+       22                     22 si            si
+(1 filas)
