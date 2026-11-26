@@ -78,6 +78,14 @@ transacción, guardan el error en la tabla `BitacoraErrores` (con `sp_Bitacora_R
 así la API sigue respondiendo igual. Script `Database/19_TryCatchBitacora.sql`, migración `M014_TryCatchBitacora`.
 Detalle en [docs/VERSIONAMIENTO_BD.md](docs/VERSIONAMIENTO_BD.md#16-sprint-10--trycatch-en-los-stored-procedures-y-bitácora-de-errores).
 
+### Diagrama de la base de datos
+
+[docs/DiagramaBD.drawio](docs/DiagramaBD.drawio) (se abre en [draw.io](https://app.diagrams.net)) y su imagen
+[docs/DiagramaBD.png](docs/DiagramaBD.png): las 9 tablas con sus columnas y las 12 llaves foráneas, tomadas del
+esquema real después de la migración 015.
+
+![Diagrama de la BD](docs/DiagramaBD.png)
+
 ### Sprint 10 — Verificación del correo y recuperación de la cuenta
 
 Las cuentas nuevas verifican su correo con un código de 6 dígitos y cualquiera puede recuperar su cuenta con un
