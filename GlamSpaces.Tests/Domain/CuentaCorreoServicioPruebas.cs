@@ -306,6 +306,122 @@ public class CuentaCorreoServicioPruebas
         await _usuarios.DidNotReceiveWithAnyArgs().CambiarContrasena(default, default!);
     }
 
+    // ---------- Convertir a administrador (contraseña + código) ----------
+
+    private static ConvertirAdministradorRequest Conversion(string codigo = "123456") =>
+        new() { UsuarioId = 7, Contrasena = "Segura123", Codigo = codigo };
+
+    [Fact]
+    public async Task PedirCodigoConversion_ContrasenaCorrecta_MandaElCodigoConLaPlantillaDeConversion()
+    {
+        // Arreglar
+        _usuarios.Obtener(7).Returns(RespuestaApi<UsuarioResponse>.Ok(Ana(true), "Consulta exitosa."));
+        _usuarios.Login(Arg.Is<LoginRequest>(l => l.Correo == "ana@glamspaces.com" && l.Password == "Segura123"))
+            .Returns(RespuestaApi<UsuarioResponse>.Ok(Ana(true), "Inicio de sesión correcto."));
+
+        // Actuar
+        var r = await Servicio.PedirCodigoConversion(Conversion());
+
+        // Afirmar
+        Assert.True(r.Exito);
+        await _codigos.Received(1).Guardar(7, PropositoCodigo.Verificacion, Arg.Any<string>());
+        await _correo.Received(1).Enviar("ana@glamspaces.com", Arg.Is<string>(a => a.Contains("administrador")), Arg.Any<string>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task PedirCodigoConversion_NoExisteOContrasenaMala_NoMandaNada()
+    {
+        // Arreglar
+        _usuarios.Obtener(99).Returns(RespuestaApi<UsuarioResponse>.Error(CodigosError.UsuarioNoEncontrado, "El usuario no existe."));
+        _usuarios.Obtener(7).Returns(RespuestaApi<UsuarioResponse>.Ok(Ana(true), "Consulta exitosa."));
+        _usuarios.Login(Arg.Any<LoginRequest>()).Returns(RespuestaApi<UsuarioResponse>.Error(CodigosError.CredencialesIncorrectas, "Correo o contraseña incorrectos."));
+
+        // Actuar
+        var noExiste = await Servicio.PedirCodigoConversion(new ConvertirAdministradorRequest { UsuarioId = 99 });
+        var mala = await Servicio.PedirCodigoConversion(new ConvertirAdministradorRequest { UsuarioId = 7, Contrasena = null! });
+
+        // Afirmar
+        Assert.Equal(CodigosError.UsuarioNoEncontrado, noExiste.Codigo);
+        Assert.Equal(CodigosError.CredencialesIncorrectas, mala.Codigo);
+        await _correo.DidNotReceiveWithAnyArgs().Enviar(default!, default!, default!, default!);
+    }
+
+    [Fact]
+    public async Task PedirCodigoConversion_YaEsAdministrador_Responde1006()
+    {
+        // Arreglar
+        var admin = Ana(true);
+        admin.TipoCuenta = "administrador";
+        _usuarios.Obtener(7).Returns(RespuestaApi<UsuarioResponse>.Ok(admin, "Consulta exitosa."));
+        _usuarios.Login(Arg.Any<LoginRequest>()).Returns(RespuestaApi<UsuarioResponse>.Ok(admin, "Inicio de sesión correcto."));
+
+        // Actuar
+        var r = await Servicio.PedirCodigoConversion(Conversion());
+
+        // Afirmar
+        Assert.Equal(CodigosError.YaEsAdministrador, r.Codigo);
+        await _codigos.DidNotReceiveWithAnyArgs().Guardar(default, default!, default!);
+    }
+
+    [Fact]
+    public async Task PedirCodigoConversion_PidioOtroHacePoco_Responde1011()
+    {
+        // Arreglar
+        _usuarios.Obtener(7).Returns(RespuestaApi<UsuarioResponse>.Ok(Ana(true), "Consulta exitosa."));
+        _usuarios.Login(Arg.Any<LoginRequest>()).Returns(RespuestaApi<UsuarioResponse>.Ok(Ana(true), "Inicio de sesión correcto."));
+        _codigos.Guardar(Arg.Any<int>(), Arg.Any<string>(), Arg.Any<string>())
+            .Returns(RespuestaApi<object?>.Error(CodigosError.EsperaParaReenviar, "Espera un momento antes de pedir otro código."));
+
+        // Actuar
+        var r = await Servicio.PedirCodigoConversion(Conversion());
+
+        // Afirmar
+        Assert.Equal(CodigosError.EsperaParaReenviar, r.Codigo);
+    }
+
+    [Fact]
+    public async Task ConvertirAAdministrador_CodigoCorrecto_Convierte()
+    {
+        // Arreglar
+        var request = Conversion(" 123 456 ");
+        _codigos.Validar(7, PropositoCodigo.Verificacion, "123456").Returns(ResultadoCodigo.Valido);
+        _usuarios.ConvertirAAdministrador(request).Returns(RespuestaApi<UsuarioResponse>.Ok(new UsuarioResponse { Id = 7, TipoCuenta = "administrador" }, "ok"));
+
+        // Actuar
+        var r = await Servicio.ConvertirAAdministrador(request);
+
+        // Afirmar
+        Assert.Equal("administrador", r.Datos!.TipoCuenta);
+    }
+
+    [Theory]
+    [InlineData(ResultadoCodigo.Incorrecto, CodigosError.CodigoIncorrecto)]
+    [InlineData(ResultadoCodigo.Vencido, CodigosError.CodigoVencido)]
+    [InlineData(ResultadoCodigo.DemasiadosIntentos, CodigosError.DemasiadosIntentos)]
+    public async Task ConvertirAAdministrador_SinElCodigoCorrecto_NoConvierte(ResultadoCodigo resultado, int esperado)
+    {
+        // Arreglar
+        _codigos.Validar(7, PropositoCodigo.Verificacion, "999999").Returns(resultado);
+
+        // Actuar
+        var r = await Servicio.ConvertirAAdministrador(Conversion("999999"));
+
+        // Afirmar
+        Assert.Equal(esperado, r.Codigo);
+        await _usuarios.DidNotReceiveWithAnyArgs().ConvertirAAdministrador(default!);
+    }
+
+    [Fact]
+    public void PlantillaCorreo_Conversion_HablaDeAdministrador()
+    {
+        // Actuar
+        var m = PlantillaCorreo.Para(PlantillaCorreo.Conversion, "Ana", "123456");
+
+        // Afirmar
+        Assert.Equal("123456 es tu código para convertir tu cuenta en administrador", m.Asunto);
+        Assert.Contains("sigue siendo de cliente", m.Texto);
+    }
+
     // ---------- Plantillas y propósitos ----------
 
     [Fact]

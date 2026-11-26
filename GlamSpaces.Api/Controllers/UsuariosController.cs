@@ -33,13 +33,21 @@ public class UsuariosController : ApiControllerBase
     public async Task<ActionResult<RespuestaApi<UsuarioResponse>>> Obtener([FromBody] IdRequest request)
         => Responder(await _usuarios.Obtener(request.Id));
 
-    // POST /api/usuarios/convertirAAdministrador  { usuarioId, contrasena }
+    // POST /api/usuarios/codigoConversion  { usuarioId, contrasena }
+    // Sprint 10: comprueba la contraseña y manda al correo el código para convertir la cuenta.
+    // 1005 (404) · 1003 (401) · 1006 (409) · 1011 (429) espera 60 s.
+    [HttpPost("codigoConversion")]
+    public async Task<ActionResult<RespuestaApi<object?>>> CodigoConversion([FromBody] ConvertirAdministradorRequest request)
+        => Responder(await _cuenta.PedirCodigoConversion(request));
+
+    // POST /api/usuarios/convertirAAdministrador  { usuarioId, contrasena, codigo }
     // Convierte una cuenta de cliente en administrador (mismo correo, contraseña e historial).
-    // Pide la contraseña porque todavía no hay JWT. 1005 (404) no existe · 1003 (401) contraseña
-    // incorrecta · 1006 (409) ya es administrador. Regresa el usuario con el mismo formato del login.
+    // Pide la contraseña porque todavía no hay JWT y, desde el Sprint 10, el código del correo.
+    // 1008/1009/1010 código · 1005 (404) no existe · 1003 (401) contraseña incorrecta ·
+    // 1006 (409) ya es administrador. Regresa el usuario con el mismo formato del login.
     [HttpPost("convertirAAdministrador")]
     public async Task<ActionResult<RespuestaApi<UsuarioResponse>>> ConvertirAAdministrador([FromBody] ConvertirAdministradorRequest request)
-        => Responder(await _usuarios.ConvertirAAdministrador(request));
+        => Responder(await _cuenta.ConvertirAAdministrador(request));
 
     // ---------- Sprint 10 · verificación del correo y recuperación de la cuenta ----------
 

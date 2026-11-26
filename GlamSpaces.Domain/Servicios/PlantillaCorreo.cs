@@ -6,19 +6,28 @@ public static class PlantillaCorreo
 {
     public sealed record Mensaje(string Asunto, string Html, string Texto);
 
+    // Plantilla del correo para convertir la cuenta en administrador (el código se guarda como de verificación).
+    public const string Conversion = "conversion";
+
     public static Mensaje Para(string proposito, string nombre, string codigo)
     {
         var primerNombre = (nombre ?? string.Empty).Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
         var saludo = primerNombre.Length > 0 ? $"Hola, {primerNombre}" : "Hola";
-        var esRecuperacion = proposito == PropositoCodigo.Recuperacion;
-
-        var asunto = esRecuperacion ? $"{codigo} es tu código para cambiar tu contraseña" : $"{codigo} es tu código para verificar tu correo";
-        var explicacion = esRecuperacion
-            ? "Recibimos una solicitud para cambiar la contraseña de tu cuenta de GlamSpaces. Escribe este código en la app:"
-            : "Gracias por crear tu cuenta en GlamSpaces. Para activarla, escribe este código en la app:";
-        var aviso = esRecuperacion
-            ? "Si no pediste cambiar tu contraseña, ignora este correo: tu contraseña sigue igual."
-            : "Si no creaste una cuenta en GlamSpaces, ignora este correo.";
+        var (asunto, explicacion, aviso) = proposito switch
+        {
+            PropositoCodigo.Recuperacion => (
+                $"{codigo} es tu código para cambiar tu contraseña",
+                "Recibimos una solicitud para cambiar la contraseña de tu cuenta de GlamSpaces. Escribe este código en la app:",
+                "Si no pediste cambiar tu contraseña, ignora este correo: tu contraseña sigue igual."),
+            Conversion => (
+                $"{codigo} es tu código para convertir tu cuenta en administrador",
+                "Recibimos una solicitud para convertir tu cuenta de GlamSpaces en administrador de salón. Escribe este código en la app:",
+                "Si no fuiste tú, ignora este correo y cambia tu contraseña: tu cuenta sigue siendo de cliente."),
+            _ => (
+                $"{codigo} es tu código para verificar tu correo",
+                "Gracias por crear tu cuenta en GlamSpaces. Para activarla, escribe este código en la app:",
+                "Si no creaste una cuenta en GlamSpaces, ignora este correo."),
+        };
         const string vigencia = "El código vence en 15 minutos y solo sirve una vez.";
 
         var texto = $"{saludo}:\n\n{explicacion}\n\n    {codigo}\n\n{vigencia}\n{aviso}\n\n— GlamSpaces";
