@@ -34,6 +34,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M011_FotosPreviewBuscar), 202611131000)]
     [InlineData(typeof(M012_MisSalonesAdmin), 202611141000)]
     [InlineData(typeof(M013_FotoSolicitudesYConversionAdmin), 202611151000)]
+    [InlineData(typeof(M014_TryCatchBitacora), 202611251000)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -525,6 +526,51 @@ public class MigracionesPruebas
         Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M013_FotoSolicitudesYConversionAdmin.ScriptHu15, "sp_Solicitud_ListarPorCliente"), down[2]);
         Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M013_FotoSolicitudesYConversionAdmin.ScriptHu18, "sp_Solicitud_ListarPorSalon"), down[3]);
         Assert.All(down.Skip(2), s => Assert.DoesNotContain("FotoPrincipal", s));
+    }
+
+    [Fact]
+    public void M014_Up_EjecutaElScript19ConTryCatchEnLos22Sp()
+    {
+        // Actuar
+        var up = ExpresionesUp(new M014_TryCatchBitacora()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+        var procedimientos = up.Where(s => s.Contains("CREATE OR ALTER PROCEDURE sp_")).ToList();
+
+        // Afirmar: Up = script 19, con la tabla (solo si no existe), su índice y el SP de la bitácora
+        Assert.Equal(ScriptsSql.Lotes(M014_TryCatchBitacora.Script), up);
+        Assert.Contains(up, s => s.Contains("IF OBJECT_ID(N'dbo.BitacoraErrores', N'U') IS NULL") && s.Contains("CREATE TABLE dbo.BitacoraErrores"));
+        Assert.Contains(up, s => s.Contains("CREATE INDEX IX_BitacoraErrores_Fecha"));
+        var bitacora = Assert.Single(up, s => s.Contains("CREATE OR ALTER PROCEDURE dbo.sp_Bitacora_RegistrarError"));
+        Assert.Contains("ERROR_NUMBER()", bitacora);
+
+        // Los 22 SP de la API: cada uno con TRY/CATCH que deshace, registra su nombre y relanza
+        Assert.Equal(M014_TryCatchBitacora.VersionAnterior.Count, procedimientos.Count);
+        foreach (var nombre in M014_TryCatchBitacora.VersionAnterior.Keys)
+        {
+            var sp = Assert.Single(procedimientos, s => s.Contains($"CREATE OR ALTER PROCEDURE {nombre}\n"));
+            Assert.Contains("BEGIN TRY", sp);
+            Assert.Contains("IF @@TRANCOUNT > 0 ROLLBACK;", sp);
+            Assert.Contains($"EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'{nombre}';", sp);
+            Assert.Contains("THROW;", sp);
+        }
+    }
+
+    [Fact]
+    public void M014_Down_RestauraLaVersionAnteriorDeCadaSpYBorraLaBitacora()
+    {
+        // Actuar
+        var down = ExpresionesDown(new M014_TryCatchBitacora()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+
+        // Afirmar: primero los 22 SP como estaban (sin la bitácora), luego el SP y la tabla
+        Assert.Equal(M014_TryCatchBitacora.VersionAnterior.Count + 2, down.Count);
+        var i = 0;
+        foreach (var (nombre, script) in M014_TryCatchBitacora.VersionAnterior)
+        {
+            Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(script, nombre), down[i]);
+            Assert.DoesNotContain("sp_Bitacora_RegistrarError", down[i]);
+            i++;
+        }
+        Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Bitacora_RegistrarError;", down[^2]);
+        Assert.Equal("DROP TABLE IF EXISTS dbo.BitacoraErrores;", down[^1]);
     }
 
     [Fact]

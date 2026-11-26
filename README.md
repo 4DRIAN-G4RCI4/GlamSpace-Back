@@ -71,6 +71,13 @@ dotnet tool restore                      # una vez: instala dotnet-fm desde .con
 
 Detalle completo, comparativa de herramientas y evidencias: [docs/VERSIONAMIENTO_BD.md](docs/VERSIONAMIENTO_BD.md).
 
+### Sprint 10 — TRY/CATCH y bitácora de errores
+
+Los 22 stored procedures manejan sus errores con `BEGIN TRY … END TRY BEGIN CATCH … END CATCH`: deshacen la
+transacción, guardan el error en la tabla `BitacoraErrores` (con `sp_Bitacora_RegistrarError`) y lo relanzan,
+así la API sigue respondiendo igual. Script `Database/19_TryCatchBitacora.sql`, migración `M014_TryCatchBitacora`.
+Detalle en [docs/VERSIONAMIENTO_BD.md](docs/VERSIONAMIENTO_BD.md#16-sprint-10--trycatch-en-los-stored-procedures-y-bitácora-de-errores).
+
 ## Pruebas
 
 Proyecto `GlamSpaces.Tests` (xUnit + NSubstitute). Las pruebas **no usan base de datos**: los
