@@ -23,6 +23,8 @@ public class ConvertirAdministradorRequest
     // TODO: tomar usuarioId del JWT cuando exista la autenticación
     public int UsuarioId { get; set; }
     public string Contrasena { get; set; } = string.Empty;
+    // Sprint 10: el código que le llegó al correo (POST /api/usuarios/codigoConversion).
+    public string Codigo { get; set; } = string.Empty;
 }
 
 // Lo que regresa el API: nunca incluye PasswordHash.

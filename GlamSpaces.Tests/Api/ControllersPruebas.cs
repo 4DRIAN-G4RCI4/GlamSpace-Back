@@ -83,6 +83,21 @@ public class ControllersPruebas
     }
 
     [Fact]
+    public async Task Usuarios_CodigoConversion_ContrasenaMala_Regresa401()
+    {
+        // Arreglar
+        var repo = Substitute.For<IUsuarioRepositorio>();
+        repo.Obtener(4).Returns(Exito(new UsuarioResponse { Id = 4, Correo = "a@x.com" }));
+        repo.Login(Arg.Any<LoginRequest>()).Returns(RespuestaApi<UsuarioResponse>.Error(CodigosError.CredencialesIncorrectas, "Correo o contraseña incorrectos."));
+
+        // Actuar
+        var resultado = Resultado(await Usuarios(repo).CodigoConversion(new ConvertirAdministradorRequest { UsuarioId = 4, Contrasena = "mala" }));
+
+        // Afirmar
+        Assert.Equal(401, resultado.StatusCode);
+    }
+
+    [Fact]
     public async Task Usuarios_ConvertirAAdministrador_YaEsAdministrador_Regresa409()
     {
         // Arreglar
