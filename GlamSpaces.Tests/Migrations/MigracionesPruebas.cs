@@ -35,6 +35,7 @@ public class MigracionesPruebas
     [InlineData(typeof(M012_MisSalonesAdmin), 202611141000)]
     [InlineData(typeof(M013_FotoSolicitudesYConversionAdmin), 202611151000)]
     [InlineData(typeof(M014_TryCatchBitacora), 202611251000)]
+    [InlineData(typeof(M015_VerificacionCorreo), 202611261000)]
     public void CadaMigracion_TieneSuNumeroDeVersionYDescripcion(Type tipo, long version)
     {
         // Actuar
@@ -546,7 +547,7 @@ public class MigracionesPruebas
         Assert.Equal(M014_TryCatchBitacora.VersionAnterior.Count, procedimientos.Count);
         foreach (var nombre in M014_TryCatchBitacora.VersionAnterior.Keys)
         {
-            var sp = Assert.Single(procedimientos, s => s.Contains($"CREATE OR ALTER PROCEDURE {nombre}\n"));
+            var sp = Assert.Single(procedimientos, s => s.Contains($"CREATE OR ALTER PROCEDURE {nombre}\n") || s.Contains($"CREATE OR ALTER PROCEDURE {nombre}\r\n"));
             Assert.Contains("BEGIN TRY", sp);
             Assert.Contains("IF @@TRANCOUNT > 0 ROLLBACK;", sp);
             Assert.Contains($"EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'{nombre}';", sp);
@@ -571,6 +572,51 @@ public class MigracionesPruebas
         }
         Assert.Equal("DROP PROCEDURE IF EXISTS dbo.sp_Bitacora_RegistrarError;", down[^2]);
         Assert.Equal("DROP TABLE IF EXISTS dbo.BitacoraErrores;", down[^1]);
+    }
+
+    [Fact]
+    public void M015_Up_EjecutaElScript20()
+    {
+        // Actuar
+        var up = ExpresionesUp(new M015_VerificacionCorreo()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+
+        // Afirmar: columna con DEFAULT 1 (las cuentas existentes quedan verificadas), tabla y los SP con TRY/CATCH
+        Assert.Equal(ScriptsSql.Lotes(M015_VerificacionCorreo.Script), up);
+        Assert.Contains(up, s => s.Contains("COL_LENGTH(N'dbo.Usuarios', N'CorreoVerificado') IS NULL") && s.Contains("DEFAULT 1"));
+        Assert.Contains(up, s => s.Contains("IF OBJECT_ID(N'dbo.CodigosCorreo', N'U') IS NULL") && s.Contains("CK_CodigosCorreo_Proposito"));
+        var registrar = Assert.Single(up, s => s.Contains("CREATE OR ALTER PROCEDURE sp_Usuario_Registrar"));
+        Assert.Contains("GETDATE(), 0)", registrar); // la cuenta nueva nace sin verificar
+        foreach (var nombre in M015_VerificacionCorreo.ProcedimientosNuevos.Concat(M015_VerificacionCorreo.ProcedimientosRestaurados))
+        {
+            var sp = Assert.Single(up, s => s.Contains($"CREATE OR ALTER PROCEDURE {nombre}\n") || s.Contains($"CREATE OR ALTER PROCEDURE {nombre}\r\n"));
+            Assert.Contains($"EXEC dbo.sp_Bitacora_RegistrarError @Procedimiento = N'{nombre}';", sp);
+        }
+        Assert.Contains(up, s => s.Contains("@Codigo = 1011"));
+    }
+
+    [Fact]
+    public void M015_Down_QuitaLoNuevoYRestauraLosSpDeUsuarioDel19()
+    {
+        // Actuar
+        var down = ExpresionesDown(new M015_VerificacionCorreo()).Cast<ExecuteSqlStatementExpression>().Select(e => e.SqlStatement).ToList();
+
+        // Afirmar
+        var nuevos = M015_VerificacionCorreo.ProcedimientosNuevos;
+        var restaurados = M015_VerificacionCorreo.ProcedimientosRestaurados;
+        Assert.Equal(nuevos.Length + restaurados.Length + 2, down.Count);
+        for (var i = 0; i < nuevos.Length; i++)
+        {
+            Assert.Equal($"DROP PROCEDURE IF EXISTS dbo.{nuevos[i]};", down[i]);
+        }
+        for (var i = 0; i < restaurados.Length; i++)
+        {
+            var sp = down[nuevos.Length + i];
+            Assert.Equal(M008_EstadoSolicitudesHU17.LoteDelProcedimiento(M014_TryCatchBitacora.Script, restaurados[i]), sp);
+            Assert.DoesNotContain("CorreoVerificado", sp);
+        }
+        Assert.Equal("DROP TABLE IF EXISTS dbo.CodigosCorreo;", down[^2]);
+        Assert.Contains("DROP CONSTRAINT IF EXISTS DF_Usuarios_CorreoVerificado", down[^1]);
+        Assert.Contains("DROP COLUMN CorreoVerificado", down[^1]);
     }
 
     [Fact]

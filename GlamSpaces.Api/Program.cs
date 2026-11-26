@@ -37,6 +37,21 @@ builder.Services.AddSingleton<IAlmacenamientoFotos>(sp =>
     new AlmacenamientoFotosAzure(sp.GetRequiredService<IOptions<OpcionesAlmacenamiento>>().Value));
 builder.Services.AddScoped<FotosSalonServicio>();
 
+// Sprint 10: correos con el código de verificación y de recuperación (Azure Communication Services
+// Email). Variables de entorno Correo__CadenaConexion y Correo__Remitente (en local: dotnet user-secrets).
+// Si faltan, la API no arranca y lo dice claramente, sin mostrar nunca el valor de la cadena.
+builder.Services.AddOptions<OpcionesCorreo>()
+    .Bind(builder.Configuration.GetSection(OpcionesCorreo.Seccion))
+    .Validate(o => !string.IsNullOrWhiteSpace(o.CadenaConexion),
+        "Falta la variable de entorno Correo__CadenaConexion (Azure Communication Services).")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Remitente),
+        "Falta la variable de entorno Correo__Remitente (ej. DoNotReply@….azurecomm.net).")
+    .ValidateOnStart();
+builder.Services.AddSingleton<IEnvioCorreo>(sp =>
+    new EnvioCorreoAzure(sp.GetRequiredService<IOptions<OpcionesCorreo>>().Value));
+builder.Services.AddScoped<ICodigoCorreoRepositorio, CodigoCorreoRepositorio>();
+builder.Services.AddScoped<CuentaCorreoServicio>();
+
 // Healthcheck para monitoreo: /health responde Healthy si la BD contesta.
 builder.Services.AddHealthChecks().AddCheck("azure-sql", () =>
 {

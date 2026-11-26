@@ -15,6 +15,11 @@ public class ControllersPruebas
 
     // ---------- Usuarios ----------
 
+    // Registro y login pasan por CuentaCorreoServicio; con dobles de códigos y correo (las cuentas
+    // de estas pruebas ya están verificadas, así que no se manda nada).
+    private static UsuariosController Usuarios(IUsuarioRepositorio repo) =>
+        new(repo, new CuentaCorreoServicio(repo, Substitute.For<ICodigoCorreoRepositorio>(), Substitute.For<IEnvioCorreo>()));
+
     [Fact]
     public async Task Usuarios_Registrar_Exitoso_Regresa200ConElUsuario()
     {
@@ -24,7 +29,7 @@ public class ControllersPruebas
         repo.Registrar(request).Returns(Exito(new UsuarioResponse { Id = 1, Correo = "ana@x.com" }));
 
         // Actuar
-        var resultado = Resultado(await new UsuariosController(repo).Registrar(request));
+        var resultado = Resultado(await Usuarios(repo).Registrar(request));
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);
@@ -40,7 +45,7 @@ public class ControllersPruebas
             .Returns(RespuestaApi<UsuarioResponse>.Error(CodigosError.CorreoDuplicado, "Ya existe una cuenta con este correo."));
 
         // Actuar
-        var resultado = Resultado(await new UsuariosController(repo).Registrar(new RegistroRequest()));
+        var resultado = Resultado(await Usuarios(repo).Registrar(new RegistroRequest()));
 
         // Afirmar
         Assert.Equal(409, resultado.StatusCode);
@@ -55,7 +60,7 @@ public class ControllersPruebas
             .Returns(RespuestaApi<UsuarioResponse>.Error(CodigosError.CredencialesIncorrectas, "Correo o contraseña incorrectos."));
 
         // Actuar
-        var resultado = Resultado(await new UsuariosController(repo).Login(new LoginRequest { Correo = "a@x.com", Password = "mala" }));
+        var resultado = Resultado(await Usuarios(repo).Login(new LoginRequest { Correo = "a@x.com", Password = "mala" }));
 
         // Afirmar
         Assert.Equal(401, resultado.StatusCode);
@@ -70,7 +75,7 @@ public class ControllersPruebas
         repo.ConvertirAAdministrador(request).Returns(Exito(new UsuarioResponse { Id = 4, TipoCuenta = "administrador" }));
 
         // Actuar
-        var resultado = Resultado(await new UsuariosController(repo).ConvertirAAdministrador(request));
+        var resultado = Resultado(await Usuarios(repo).ConvertirAAdministrador(request));
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);
@@ -86,7 +91,7 @@ public class ControllersPruebas
             .Returns(RespuestaApi<UsuarioResponse>.Error(CodigosError.YaEsAdministrador, "La cuenta ya es de administrador."));
 
         // Actuar
-        var resultado = Resultado(await new UsuariosController(repo).ConvertirAAdministrador(new ConvertirAdministradorRequest()));
+        var resultado = Resultado(await Usuarios(repo).ConvertirAAdministrador(new ConvertirAdministradorRequest()));
 
         // Afirmar
         Assert.Equal(409, resultado.StatusCode);
@@ -100,7 +105,7 @@ public class ControllersPruebas
         repo.Obtener(5).Returns(Exito(new UsuarioResponse { Id = 5 }));
 
         // Actuar
-        var resultado = Resultado(await new UsuariosController(repo).Obtener(new IdRequest { Id = 5 }));
+        var resultado = Resultado(await Usuarios(repo).Obtener(new IdRequest { Id = 5 }));
 
         // Afirmar
         Assert.Equal(200, resultado.StatusCode);

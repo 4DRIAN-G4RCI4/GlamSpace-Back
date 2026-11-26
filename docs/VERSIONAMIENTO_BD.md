@@ -128,6 +128,7 @@ scripts/migraciones.ps1            listar, subir, rollback, reaplicar, respaldar
 | 012 | `202611141000` | `M012_MisSalonesAdmin` | **Mis salones (mejoras de HU-07 / HU-08), Sprint 7**: miniatura y número de fotos en el listado del admin, y eliminar salón. No cambia tablas. | Ejecuta `Database/14_MisSalonesAdmin.sql` incrustado: `sp_Salon_Listar` (`CREATE OR ALTER`) agrega `FotoPrincipal` y `TotalFotos`; crea `sp_Salon_Eliminar`. | Borra `sp_Salon_Eliminar` y restaura `sp_Salon_Listar` de `02_StoredProcedures.sql`. |
 | 013 | `202611151000` | `M013_FotoSolicitudesYConversionAdmin` | **Sprint 7**: foto del salón en las solicitudes y convertir una cuenta de cliente en administrador. No cambia tablas. | Ejecuta `Database/18_FotoSolicitudesYConversionAdmin.sql` incrustado: `FotoPrincipal` en `sp_Solicitud_ListarPorCliente` y `sp_Solicitud_ListarPorSalon`; crea `sp_Usuario_ObtenerCredenciales` y `sp_Usuario_ConvertirAAdministrador`. | Borra los 2 SP nuevos y restaura los listados de `08` y `11`. |
 | 014 | `202611251000` | `M014_TryCatchBitacora` | **Sprint 10 (pedido del profe)**: TRY/CATCH en los 22 stored procedures y bitácora de errores. Ver [sección 16](#16-sprint-10--trycatch-en-los-stored-procedures-y-bitácora-de-errores). | Ejecuta `Database/19_TryCatchBitacora.sql` incrustado: tabla `BitacoraErrores` (si no existe) con índice por fecha, `sp_Bitacora_RegistrarError` y los 22 SP con su cuerpo dentro de `BEGIN TRY … END TRY` y un `CATCH` que hace `ROLLBACK`, registra y relanza. Evidencia `38`. | Restaura cada SP desde el script de su versión anterior (`M014_TryCatchBitacora.VersionAnterior`) y borra `sp_Bitacora_RegistrarError` y la tabla. |
+| 015 | `202611261000` | `M015_VerificacionCorreo` | **Sprint 10 (pedido del profe)**: verificación del correo al crear la cuenta y recuperación de la cuenta con código. Ver [sección 17](#17-sprint-10--verificación-del-correo-y-recuperación-de-la-cuenta). | Ejecuta `Database/20_VerificacionCorreo.sql` incrustado: columna `Usuarios.CorreoVerificado` (`DEFAULT 1`, las cuentas existentes quedan verificadas), tabla `CodigosCorreo`, `CorreoVerificado` en 3 SP de usuario y 5 SP nuevos de códigos, todos con TRY/CATCH. Evidencia `39`. | Borra los 5 SP nuevos, restaura los 3 SP de usuario del `19` y quita la tabla y la columna con su `DEFAULT`. |
 
 **Detalle técnico de la línea base:** FluentMigrator no acepta el separador `GO` dentro de un mismo
 `Execute.Sql`, y los scripts de `Database/` lo usan entre cada SP. `ScriptsSql.Lotes()` divide cada
@@ -3016,3 +3017,47 @@ ORDER BY Fecha DESC;
 
 **Producción**: se corre a mano `Database/19_TryCatchBitacora.sql` en Azure (`glamspaces-db`). Es
 idempotente y no cambia datos; la API no necesita cambios.
+
+## 17. Sprint 10 — Verificación del correo y recuperación de la cuenta
+
+Pedido del profe: verificar el correo al crear la cuenta y recuperar la cuenta con un código por correo.
+Script `Database/20_VerificacionCorreo.sql`, migración `M015_VerificacionCorreo`. Los correos los manda
+**Azure Communication Services Email** (recursos `glamspaces-email` y `glamspaces-comunicacion`).
+
+**Cambios en la BD**
+
+| Qué | Detalle |
+|---|---|
+| `Usuarios.CorreoVerificado` | `BIT NOT NULL DEFAULT 1`. Al agregarse, **todas las cuentas existentes quedan verificadas**; `sp_Usuario_Registrar` guarda las nuevas con `0`. |
+| Tabla `CodigosCorreo` | `Id`, `UsuarioId` (FK → `Usuarios`), `Proposito` (`CHECK` en `'verificacion'`, `'recuperacion'`), `HashCodigo`, `VenceEn`, `Intentos`, `Usado`, `FechaCreacion`. Índice `(UsuarioId, Proposito, Id DESC)`. |
+| `sp_CodigoCorreo_Crear` | Guarda el hash del código (vence en 15 min) e invalida los anteriores del mismo propósito. **1011** si se pidió otro hace menos de 60 s (con `UPDLOCK, HOLDLOCK`: dos peticiones al mismo tiempo no mandan dos códigos). |
+| `sp_CodigoCorreo_ObtenerVigente` | El último código sin usar, con `Vencido` calculado con el reloj de la BD. |
+| `sp_CodigoCorreo_RegistrarIntento` | Correcto → `Usado = 1`; incorrecto → `Intentos + 1`. La API bloquea el código al quinto intento. |
+| `sp_Usuario_MarcarCorreoVerificado` | `CorreoVerificado = 1` y regresa el usuario. |
+| `sp_Usuario_CambiarContrasena` | Nuevo hash, cuenta verificada e invalida los códigos de recuperación. |
+
+**Seguridad**
+
+- El código es de 6 dígitos (`RandomNumberGenerator`) y **solo se guarda su hash** (el mismo PBKDF2 de las contraseñas).
+- 15 minutos de vigencia, un solo uso, 5 intentos y 60 s entre códigos.
+- `recuperar` y `reenviarCodigo` responden lo mismo exista o no la cuenta: no revelan qué correos están registrados.
+- La cadena de conexión de Azure vive en la Web App (`Correo__CadenaConexion`, `Correo__Remitente`), nunca en el repo.
+
+**Endpoints** (`UsuariosController` → `CuentaCorreoServicio`)
+
+| Endpoint | Body | Respuesta |
+|---|---|---|
+| `POST /api/usuarios/registro` | igual | el usuario con `correoVerificado: false` y manda el código |
+| `POST /api/usuarios/login` | igual | **1007** (403) si el correo no está verificado; le reenvía el código |
+| `POST /api/usuarios/verificarCorreo` | `{ correo, codigo }` | el usuario verificado · 1008 incorrecto · 1009 vencido · 1010 (429) demasiados intentos |
+| `POST /api/usuarios/reenviarCodigo` | `{ correo, proposito }` | mensaje · 1011 (429) espera 60 s |
+| `POST /api/usuarios/recuperar` | `{ correo }` | siempre el mismo mensaje |
+| `POST /api/usuarios/restablecer` | `{ correo, codigo, nuevaContrasena }` | mensaje · 1008/1009/1010 |
+
+**Pruebas**: `CuentaCorreoServicioPruebas`, `CorreoInfraestructuraPruebas`, `CorreoEndpointsPruebas` y
+`MigracionesPruebas` (Up y Down de la 015). El workflow corre el 20 dos veces y verifica el rollback y la
+reaplicación. Evidencia `docs/evidencias/39_verificacion_correo_local.txt`: el flujo completo con los SP
+reales en LocalDB.
+
+**Producción**: se corre a mano `Database/20_VerificacionCorreo.sql` en Azure (`glamspaces-db`). Es idempotente
+y deja verificadas las cuentas que ya existen.

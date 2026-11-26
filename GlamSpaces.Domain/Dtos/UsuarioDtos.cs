@@ -34,6 +34,7 @@ public class UsuarioResponse
     public string TipoCuenta { get; set; } = string.Empty;
     public string? NombreSalon { get; set; }
     public DateTime FechaRegistro { get; set; }
+    public bool CorreoVerificado { get; set; } = true;
 
     public static UsuarioResponse Desde(Usuario u) => new()
     {
@@ -43,5 +44,6 @@ public class UsuarioResponse
         TipoCuenta = u.TipoCuenta,
         NombreSalon = u.NombreSalon,
         FechaRegistro = u.FechaRegistro,
+        CorreoVerificado = u.CorreoVerificado,
     };
 }

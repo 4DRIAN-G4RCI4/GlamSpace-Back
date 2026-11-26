@@ -9,4 +9,7 @@ public class Usuario
     public string TipoCuenta { get; set; } = string.Empty; // "cliente" o "administrador"
     public string? NombreSalon { get; set; } // solo si TipoCuenta = administrador
     public DateTime FechaRegistro { get; set; } = DateTime.Now;
+    // Sprint 10: las cuentas nuevas verifican su correo con un código. Por omisión true: si un SP no
+    // regresa la columna, nunca se bloquea a nadie por error.
+    public bool CorreoVerificado { get; set; } = true;
 }
