@@ -9,6 +9,9 @@ namespace GlamSpaces.Domain.Servicios;
 //   Login     → si la cuenta no ha verificado su correo: le reenvía el código y responde 1007.
 //   VerificarCorreo / Restablecer → comprueban el código; Recuperar → manda el de recuperación.
 // Recuperar y reenviar responden siempre lo mismo para no revelar qué correos tienen cuenta.
+//   PedirCodigoConversion / ConvertirAAdministrador → convertir la cuenta pide contraseña Y código.
+//   Ese código se guarda con el propósito "verificacion" (la cuenta ya está verificada, así que no
+//   choca con otro uso) y se manda con la plantilla de conversión.
 public class CuentaCorreoServicio
 {
     public const string MensajeCodigoEnviado = "Si el correo tiene una cuenta, te mandamos un código.";
@@ -98,15 +101,40 @@ public class CuentaCorreoServicio
             : ErrorDeCodigo<object?>(resultado);
     }
 
+    // Paso 1 de la conversión: comprueba la contraseña y manda el código al correo de la cuenta.
+    // 1005 no existe · 1003 contraseña incorrecta · 1006 ya es administrador · 1011 espera 60 s.
+    public async Task<RespuestaApi<object?>> PedirCodigoConversion(ConvertirAdministradorRequest request)
+    {
+        var cuenta = await _usuarios.Obtener(request.UsuarioId);
+        if (!cuenta.Exito) return RespuestaApi<object?>.Error(cuenta.Codigo, cuenta.Mensaje);
+
+        var login = await _usuarios.Login(new LoginRequest { Correo = cuenta.Datos!.Correo, Password = request.Contrasena ?? string.Empty });
+        if (!login.Exito) return RespuestaApi<object?>.Error(login.Codigo, login.Mensaje);
+        if (login.Datos!.TipoCuenta == "administrador")
+            return RespuestaApi<object?>.Error(CodigosError.YaEsAdministrador, "Tu cuenta ya es de administrador.");
+
+        var envio = await MandarCodigo(login.Datos, PropositoCodigo.Verificacion, PlantillaCorreo.Conversion);
+        return envio.Exito ? RespuestaApi<object?>.Ok(null, "Te mandamos un código a tu correo.") : envio;
+    }
+
+    // Paso 2: sin el código correcto no se convierte. Después el repositorio vuelve a comprobar la contraseña.
+    public async Task<RespuestaApi<UsuarioResponse>> ConvertirAAdministrador(ConvertirAdministradorRequest request)
+    {
+        var resultado = await _codigos.Validar(request.UsuarioId, PropositoCodigo.Verificacion, Limpiar(request.Codigo));
+        return resultado == ResultadoCodigo.Valido
+            ? await _usuarios.ConvertirAAdministrador(request)
+            : ErrorDeCodigo<UsuarioResponse>(resultado);
+    }
+
     // Genera el código, lo guarda (hasheado) y lo manda. 1011 si se pidió otro hace menos de 60 s;
     // 5000 si el correo no salió.
-    private async Task<RespuestaApi<object?>> MandarCodigo(UsuarioResponse usuario, string proposito)
+    private async Task<RespuestaApi<object?>> MandarCodigo(UsuarioResponse usuario, string proposito, string? plantilla = null)
     {
         var codigo = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
         var guardado = await _codigos.Guardar(usuario.Id, proposito, codigo);
         if (!guardado.Exito) return guardado;
 
-        var mensaje = PlantillaCorreo.Para(proposito, usuario.NombreCompleto, codigo);
+        var mensaje = PlantillaCorreo.Para(plantilla ?? proposito, usuario.NombreCompleto, codigo);
         try
         {
             await _correo.Enviar(usuario.Correo, mensaje.Asunto, mensaje.Html, mensaje.Texto);
